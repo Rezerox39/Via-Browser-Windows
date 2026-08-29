@@ -215,7 +215,9 @@ pub async fn create_tab(
     *idx += 1;
     let id = *idx;
     let label = format!("tab-{id}");
-    let target = url.unwrap_or(s.homepage.clone());
+    // Tabs start at about:blank. The local HTML homepage is shown until the
+    // user types a query/URL — we never auto-navigate to an external site.
+    let target = url.unwrap_or_else(|| "about:blank".to_string());
     let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
     let (pos, size) = tab_bounds(&app);
 
@@ -265,8 +267,9 @@ pub async fn create_tab(
     let webview = window
         .add_child(builder, pos, size)
         .map_err(|e| e.to_string())?;
-    webview.set_focus().ok();
-    webview.show().ok();
+    // Start hidden: the pure-black local homepage is shown until the user
+    // navigates somewhere (the frontend calls show_tab on navigation).
+    webview.hide().ok();
 
     {
         let mut tabs = state.tabs.lock().unwrap();

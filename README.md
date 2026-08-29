@@ -27,10 +27,11 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
 
 ## Features
 
-- **Via-style mobile UI on PC** — no top chrome. A 5-icon bottom navigation bar
-  (Back / Forward / Home / Tabs / Menu), a centered speed-dial homepage, a
-  full-width floating address bar, a card-grid tab switcher, and a slide-up
-  grid menu. Just like the Android app, adapted for mouse & keyboard.
+- **Via-style mobile UI on PC** — no top chrome, pure-black local home screen
+  (no external site is loaded on launch; the webview stays hidden until you
+  search/navigate). A 5-icon bottom navigation bar capped at a phone-like
+  500px (Back / Forward / Home / Tabs / Menu), a floating address bar, a
+  card-grid tab switcher, and a dark 4-column slide-up grid menu.
 - **Tabs** — real parallel tabs (each is a native WebView2 child webview);
   visual card grid switcher. `Ctrl+T`, `Ctrl+W`, `Ctrl+L`.
 - **Omnibox** — floating address/search bar with live suggestions

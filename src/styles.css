@@ -115,3 +115,42 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 /* Toast */
 #toast { position: absolute; left: 50%; bottom: calc(var(--nav-h) + 14px); transform: translate(-50%, 20px); background: #222; color: #fff; padding: 9px 16px; border-radius: 20px; font-size: 13px; opacity: 0; pointer-events: none; transition: .25s; z-index: 300; white-space: nowrap; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Scrollable 4-column grid menu (30+ features) ---------- */
+#menu .sheet { max-height: 78vh; display: flex; flex-direction: column; }
+#menu .grid { overflow-y: auto; max-height: 62vh; padding: 2px 2px 10px; overscroll-behavior: contain; }
+#menu .grid::-webkit-scrollbar { width: 6px; }
+#menu .grid::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+#menu .grid .item { position: relative; }
+#menu .grid .item.off { opacity: .35; }
+#menu .grid .item.on svg { color: var(--accent); }
+#menu .grid .item.on::after { content: ""; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+
+/* ---------- Feature panels ---------- */
+#panel { position: absolute; inset: 0; z-index: 240; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+#panel .pc {
+  width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-bottom: none;
+  border-radius: 18px 18px 0 0; padding: 12px 14px 24px; max-height: 82vh; display: flex; flex-direction: column;
+  transform: translateY(110%); transition: transform .2s ease;
+}
+#panel .pc.on { transform: translateY(0); }
+#panel .ph { display: flex; align-items: center; gap: 12px; padding: 6px 4px 12px; }
+#panel .ph b { flex: 1; font-size: 15px; }
+#panel .ph .close { border: none; background: none; color: var(--gray); font-size: 20px; cursor: pointer; }
+#panel .pb { overflow-y: auto; overscroll-behavior: contain; }
+#panel .pb::-webkit-scrollbar { width: 6px; }
+#panel .pb::-webkit-scrollbar-thumb { background: var(--line); border-radius: 3px; }
+#panel .plist { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+#panel .prow { display: flex; flex-direction: column; gap: 3px; background: var(--panel-2); border-radius: 12px; padding: 10px 12px; cursor: pointer; }
+#panel .prow .ptitle { font-size: 13px; color: var(--white); }
+#panel .prow small { font-size: 11px; color: var(--gray); word-break: break-all; }
+#panel .prow .pin { color: var(--accent); font-size: 15px; }
+#panel .empty { color: var(--gray); font-size: 12px; text-align: center; padding: 18px 0; }
+#panel .pbtn { border: 1px solid var(--line); background: var(--panel-2); color: var(--white); border-radius: 20px; padding: 8px 16px; font-size: 13px; cursor: pointer; margin-top: 8px; }
+#panel .pbtn.primary { background: var(--accent); color: #000; border-color: transparent; font-weight: 600; }
+#panel .pbtn.danger { color: #ff6b6b; border-color: #ff6b6b44; }
+#panel .pselect, #panel .pinput { background: var(--panel-2); color: var(--white); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font-size: 13px; width: 100%; }
+#panel .pselect option { background: var(--panel); }
+#panel .ptext { background: var(--panel-2); color: var(--white); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: 12px/1.5 monospace; width: 100%; min-height: 120px; resize: vertical; }
+#panel label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gray); }
+#panel .qr { background: #fff; border-radius: 12px; padding: 18px; margin: 12px 0; text-align: center; }

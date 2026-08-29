@@ -1,11 +1,15 @@
 mod adblock;
 mod commands;
+mod features;
 mod init;
+mod reader;
 mod settings;
 
-use commands::{BrowserState, SettingsState};
 use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
+
+use commands::{BrowserState, SettingsState};
+use features::StoreState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -14,7 +18,11 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle();
             let loaded = commands::load_settings(&handle);
+            if let Ok(dir) = handle.path().app_config_dir() {
+                adblock::load_user_filters(&dir);
+            }
             handle.manage(SettingsState(Mutex::new(loaded)));
+            handle.manage(StoreState(Mutex::new(features::load_store(&handle))));
 
             // Keep every tab webview above the HTML bottom nav bar when the
             // window is resized (native webviews don't follow CSS layout).
@@ -30,6 +38,7 @@ pub fn run() {
         })
         .manage(BrowserState::default())
         .invoke_handler(tauri::generate_handler![
+            // tabs & navigation
             commands::create_tab,
             commands::close_tab,
             commands::show_tab,
@@ -39,6 +48,7 @@ pub fn run() {
             commands::eval_tab,
             commands::get_tab_url,
             commands::list_tabs,
+            // settings & browser
             commands::get_settings,
             commands::set_settings,
             commands::user_agent_for,
@@ -48,6 +58,33 @@ pub fn run() {
             commands::clear_data,
             commands::set_night_mode,
             commands::search_suggest,
+            commands::parse_and_load_url,
+            // features
+            features::add_bookmark,
+            features::remove_bookmark,
+            features::list_bookmarks,
+            features::is_bookmarked,
+            features::add_history,
+            features::list_history,
+            features::clear_history,
+            features::list_downloads,
+            features::save_page,
+            features::get_cookies,
+            features::clear_cookies,
+            features::list_scripts,
+            features::save_script,
+            features::delete_script,
+            features::list_site_configs,
+            features::save_site_config,
+            features::delete_site_config,
+            features::network_log,
+            features::mark_as_ad,
+            features::remove_marked_ad,
+            features::list_marked_ads,
+            features::all_cosmetic_rules,
+            features::open_external,
+            reader::reader_bundle,
+            reader::reader_close,
         ])
         .run(tauri::generate_context!())
         .expect("error while running via browser");

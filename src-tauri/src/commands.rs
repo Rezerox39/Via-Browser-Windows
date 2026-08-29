@@ -96,7 +96,7 @@ pub fn load_settings(app: &tauri::AppHandle) -> Settings {
     Settings::default()
 }
 
-fn persist_settings(app: &tauri::AppHandle, s: &Settings) {
+pub fn persist_settings(app: &tauri::AppHandle, s: &Settings) {
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("via-settings.json");
@@ -221,6 +221,7 @@ pub async fn create_tab(
     let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
     let (pos, size) = tab_bounds(&app);
 
+    let nav_settings = s.clone(); // captured by on_navigation (site overrides)
     let mut builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(parsed.clone()))
         .initialization_script(init::build(&s))
         .on_page_load(move |wv, payload| {
@@ -246,16 +247,33 @@ pub async fn create_tab(
             let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
             if let Some(id) = id {
                 if let Some(win) = wv_app.get_webview_window("main") {
+                    // Secure page->host bridge: "VIA:" + URI-encoded JSON [action, data].
+                    if let Some(rest) = title.strip_prefix("VIA:") {
+                        if let Some(decoded) = percent_decode(rest) {
+                            let _ = win.emit(
+                                "via-msg",
+                                serde_json::json!({ "id": id, "msg": decoded }),
+                            );
+                        }
+                        return;
+                    }
                     let _ = win.emit("tab-title", serde_json::json!({ "id": id, "title": title }));
                 }
             }
         })
         .on_navigation(move |url| {
             // Main-frame adblock: block navigation to blocked hosts.
-            if s.adblock_enabled {
-                if adblock::load_default_filters().block(url.as_str()).is_some() {
-                    return false;
+            // Honours the default toggle and per-site ("Site configuration") overrides.
+            let host = url.host_str().unwrap_or("").to_lowercase();
+            let mut adblock = nav_settings.adblock_enabled;
+            for site in &nav_settings.sites {
+                if host == site.host || host.ends_with(&format!(".{}", site.host)) {
+                    adblock = site.adblock_enabled;
+                    break;
                 }
+            }
+            if adblock && adblock::load_default_filters().block(url.as_str()).is_some() {
+                return false;
             }
             true
         });
@@ -456,4 +474,96 @@ pub fn normalize_url(input: &str) -> String {
     }
     let q = urlencoding(t);
     format!("https://www.bing.com/search?q={q}")
+}
+
+/// Minimal percent-decoder ("%XX" -> byte), returning None on malformed input.
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_val(bytes[i + 1])?;
+                let lo = hex_val(bytes[i + 2])?;
+                out.push((hi << 4) | lo);
+                i += 3;
+            }
+            b'+' => { out.push(b' '); i += 1; }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Central URL/search router (Via-style). Decides whether `input` is a URL or
+/// a search query and returns the fully-qualified URL to load. Mirrors Via's
+/// address-bar handling: explicit schemes pass through, a bare domain-ish
+/// string gets https://, everything else becomes a search on the active engine.
+pub fn parse_address(input: &str, search_engine: &str) -> String {
+    let t = input.trim();
+    if t.is_empty() {
+        return settings::DEFAULT_HOMEPAGE.to_string();
+    }
+    if let Ok(u) = Url::parse(t) {
+        if u.scheme().len() > 1 && !matches!(u.scheme(), "about" | "data" | "javascript") {
+            return u.to_string();
+        }
+    }
+    // localhost / IP literals are URLs
+    if t.starts_with("localhost") || is_ip_literal(t) {
+        return if t.contains("://") { t.to_string() } else { format!("http://{t}") };
+    }
+    // domain-like: contains a dot + a TLD-ish tail, no spaces
+    let no_scheme = t;
+    if no_scheme.contains('.')
+        && !no_scheme.contains(' ')
+        && !no_scheme.starts_with('/')
+        && looks_like_host(no_scheme)
+    {
+        return format!("https://{no_scheme}");
+    }
+    // otherwise: search
+    let q = urlencoding(no_scheme);
+    let template = match search_engine {
+        "Bing" => "https://www.bing.com/search?q={q}",
+        "DuckDuckGo" => "https://duckduckgo.com/?q={q}",
+        "Baidu" => "https://www.baidu.com/s?wd={q}",
+        _ => "https://www.google.com/search?q={q}",
+    };
+    template.replace("{q}", &q)
+}
+
+fn is_ip_literal(s: &str) -> bool {
+    let host = s.trim_start_matches("http://").trim_start_matches("https://");
+    let host = host.split('/').next().unwrap_or(host);
+    host.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) && host.split('.').count() == 4
+}
+
+fn looks_like_host(s: &str) -> bool {
+    // 'example.com', 'www.example.com/path', 'sub.example.co.uk:8080'
+    let host = s.split(['/', ':']).next().unwrap_or(s);
+    let mut parts = host.split('.');
+    let domain = parts.next_back().unwrap_or("");
+    let has_tld = domain.len() >= 2 && domain.chars().all(|c| c.is_ascii_alphabetic());
+    let labels_ok = host.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    has_tld && labels_ok && host.split('.').count() >= 2
+}
+
+#[tauri::command]
+pub fn parse_and_load_url(
+    sstate: tauri::State<'_, SettingsState>,
+    input: String,
+) -> String {
+    let engine = sstate.0.lock().unwrap().search_engine.clone();
+    parse_address(&input, &engine)
 }

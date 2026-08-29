@@ -7,7 +7,15 @@ type Settings = {
   homepage: string; search_engine: string; ua_mode: string; custom_ua: string;
   adblock_enabled: boolean; clear_on_exit: boolean; user_css: string; user_js: string;
   night_mode: boolean; desktop_mode: boolean;
+  text_size: number; show_images: boolean; network_log: boolean; game_mode: boolean;
+  read_aloud_enabled: boolean;
+  scripts: UserScript[]; sites: SiteConfig[]; pages_log: string[][];
 };
+type UserScript = { id: string; name: string; match_urls: string; code: string; enabled: boolean };
+type SiteConfig = { host: string; ua_mode: string; adblock_enabled: boolean };
+type Bookmark = { url: string; title: string; folder: string };
+type HistItem = { url: string; title: string; ts: number };
+type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
 
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=", Bing: "https://www.bing.com/search?q=",
@@ -27,7 +35,17 @@ let nightMode = false;
 let desktopMode = true;
 let searchEngine = "Google";
 let hasNavigated = false;          // true once the user navigates off the homepage
-let overlay: "none" | "addr" | "tabs" | "menu" = "none";
+let overlay: "none" | "addr" | "tabs" | "menu" | "panel" = "none";
+let textSize = 1.0, showImages = true, networkLog = false, gameMode = false, readAloud = false;
+let adblockOn = true, incognitoMode = false, isFullscreen = false;
+let userCss = "";                   // custom CSS applied to every page
+let scripts: UserScript[] = [];    // cached script store
+let sites: SiteConfig[] = [];      // cached site configs
+let bookmarks: Bookmark[] = [];
+let historyItems: HistItem[] = [];
+let downloads: DlItem[] = [];
+let snifferItems: string[] = [];   // media URLs captured from active page
+let markAdActive = false;          // "Mark as ad" picker mode toggle
 
 const q = (id: string) => document.getElementById(id) as any;
 
@@ -97,6 +115,8 @@ function setHome(on: boolean) {
 /* ---- Native webview visibility (CSS can't affect native webviews) ---- */
 async function hideActiveWebview() { if (activeId != null) await invoke("hide_tab", { id: activeId }).catch(()=>{}); }
 async function showActiveWebview() { if (activeId != null) await invoke("show_tab", { id: activeId }).catch(()=>{}); }
+function evalInActive(js: string) { if (activeId != null) return invoke("eval_tab", { id: activeId, js }); return Promise.resolve(); }
+function locationIt() { const t = tabs.find(x => x.id === activeId); return t && t.url && !t.url.startsWith("about:") ? t.url : "https://www.bing.com"; }
 
 /* ---- Overlays ---- */
 function openAddr() {
@@ -113,17 +133,14 @@ function closeOverlay() {
 
 /* ---- URL helpers ---- */
 function searchUrl(engine: string, q2: string) { return (ENGINES[engine] || ENGINES.Bing) + encodeURIComponent(q2); }
-function norm(input: string): string {
-  const t = input.trim(); if (!t) return "https://www.bing.com";
-  if (/^https?:\/\//i.test(t)) return t;
-  if (/^[a-z0-9-]+(\.[a-z0-9-]+)+([/:].*)?$/i.test(t) && !t.includes(" ")) return "https://" + t;
-  return searchUrl(searchEngine, t);
-}
 async function goAddr() {
   const v = ainput.value; const wasOpen = overlay === "addr";
   closeOverlay();
-  if (v.trim()) await navigate(norm(v));
-  else if (wasOpen) setHome(true);
+  if (v.trim()) {
+    // Route through the Rust backend (Via-style URL/search detection).
+    const url = await invoke<string>("parse_and_load_url", { input: v }).catch(() => searchUrl(searchEngine, v.trim()));
+    await navigate(url);
+  } else if (wasOpen) setHome(true);
 }
 let sugT: any;
 async function doSuggest() {
@@ -193,29 +210,71 @@ function renderTabGrid() {
 }
 function esc(s: string) { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 
-/* ---- Menu (8 items, 4 columns) ---- */
-const MENUS: { id: string; label: string; svg: string }[] = [
-  { id: "m-bkm", label: "Bookmarks", svg: '<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
-  { id: "m-hist", label: "History", svg: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>' },
-  { id: "m-down", label: "Downloads", svg: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>' },
-  { id: "m-inco", label: "Incognito", svg: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>' },
-  { id: "m-addbkm", label: "Add bookmark", svg: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>' },
-  { id: "m-desktop", label: "Desktop", svg: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>' },
-  { id: "m-tools", label: "Tools", svg: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>' },
-  { id: "m-settings", label: "Settings", svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
+/* ---- Menu: 30+ Via features, 4-column scrollable grid ---- */
+type MenuDef = { id: string; label: string; svg: string };
+const MENUS: MenuDef[] = [
+  { id: "m-find",     label: "Find in page",   svg: '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/><path d="M8.5 11h5"/>' },
+  { id: "m-save",     label: "Save",            svg: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>' },
+  { id: "m-saved",    label: "Saved pages",     svg: '<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
+  { id: "m-trans",    label: "Translate",       svg: '<path d="M4 5h7"/><path d="M9 3v2"/><path d="M5 9c.5 2 3 4 6 4"/><path d="M9 13c-1 2-3 3-4 3"/><path d="m14 5 6 16"/><path d="M18 16h-6"/>' },
+  { id: "m-src",      label: "View source",     svg: '<path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/>' },
+  { id: "m-full",     label: "Full-screen",     svg: '<path d="M8 3H5a2 2 0 00-2 2v3"/><path d="M21 8V5a2 2 0 00-2-2h-3"/><path d="M3 16v3a2 2 0 002 2h3"/><path d="M16 21h3a2 2 0 002-2v-3"/>' },
+  { id: "m-imgs",     label: "Show images",     svg: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.3-3.3a2 2 0 00-2.8 0L6 21"/>' },
+  { id: "m-sniff",    label: "Resource sniffer",svg: '<circle cx="12" cy="12" r="2"/><path d="M12 2a10 10 0 0110 10 10 10 0 01-10 10 10 10 0 01-10-10A10 10 0 0112 2z"/>' },
+  { id: "m-ua",       label: "User-agent",      svg: '<rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 22h8"/><path d="M12 18v4"/>' },
+  { id: "m-netlog",   label: "Network log",     svg: '<path d="M5 3v18"/><path d="M5 6h14"/><path d="M5 12h9"/><path d="M5 18h12"/><path d="M19 3v2"/>' },
+  { id: "m-qr",       label: "Scan QR code",    svg: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM21 14v3M21 21h-4"/>' },
+  { id: "m-homeadd",  label: "Add to home screen", svg: '<path d="m3 9 9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><path d="M9 22V12h6v10"/>' },
+  { id: "m-readaloud",label: "Read aloud",      svg: '<path d="M12 2a3 3 0 013 3v7a3 3 0 01-6 0V5a3 3 0 013-3z"/><path d="M19 10a7 7 0 01-14 0"/>' },
+  { id: "m-ai",       label: "AI",              svg: '<path d="M12 2a10 10 0 0110 10 10 10 0 01-10 10A10 10 0 012 12 10 10 0 0112 2z"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><path d="M9 9h.01M15 9h.01"/>' },
+  { id: "m-orient",   label: "Orientation",     svg: '<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>' },
+  { id: "m-adblock",  label: "Ad blocking",     svg: '<path d="M12 2 4 5v6c0 5 3.4 9.4 8 11 4.6-1.6 8-6 8-11V5z"/><path d="m9 12 2 2 4-4"/>' },
+  { id: "m-ad",       label: "Mark as ad",      svg: '<circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/>' },
+  { id: "m-textsize", label: "Text size",       svg: '<path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/>' },
+  { id: "m-clear",    label: "Clear data",      svg: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m6 6 1 15h10l1-15"/>' },
+  { id: "m-custommenu",label: "Customize menu", svg: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/>' },
+  { id: "m-reload",   label: "Reload",          svg: '<path d="M21 12a9 9 0 11-2.6-6.4"/><path d="M21 3v6h-6"/>' },
+  { id: "m-sitecfg",  label: "Site configuration", svg: '<circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>' },
+  { id: "m-scripts",  label: "Scripts",         svg: '<path d="m8 6-6 6 6 6"/><path d="m16 6 6 6-6 6"/>' },
+  { id: "m-print",    label: "Print/PDF",       svg: '<path d="M6 9V2h12v7"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><rect x="6" y="14" width="12" height="8"/>' },
+  { id: "m-reader",   label: "Reader mode",     svg: '<path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/>' },
+  { id: "m-openwith", label: "Open with",       svg: '<path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><path d="M15 3h6v6"/><path d="M10 14 21 3"/>' },
+  { id: "m-game",     label: "Game mode",       svg: '<path d="M6 11h4"/><path d="M8 9v4"/><path d="M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 00-4 4.6l.8 6a4 4 0 004 3.4h1a3 3 0 002.4-1.2l2-2.6 2 2.6a3 3 0 002.4 1.2h1a4 4 0 004-3.4l.8-6a4 4 0 00-4-4.6z"/>' },
+  { id: "m-fav",      label: "Add favorite",    svg: '<path d="M12 20l-7-5V5a2 2 0 012-2h10a2 2 0 012 2v10z"/>' },
+  { id: "m-rpt",      label: "Report abuse",    svg: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/>' },
+  { id: "m-bkm",      label: "Bookmarks",       svg: '<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>' },
+  { id: "m-hist",     label: "History",         svg: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>' },
+  { id: "m-down",     label: "Downloads",       svg: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>' },
+  { id: "m-inco",     label: "Incognito",       svg: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>' },
+  { id: "m-addbkm",   label: "Add bookmark",    svg: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/>' },
+  { id: "m-desktop",  label: "Desktop site",    svg: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>' },
+  { id: "m-night",    label: "Night mode",      svg: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>' },
+  { id: "m-settings", label: "Settings",        svg: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>' },
 ];
+
+function menuHiddenIds(): string[] {
+  try { return JSON.parse(localStorage.getItem("via.menuHidden") || "[]"); } catch { return []; }
+}
 function buildMenuUI() {
   menuGrid.innerHTML = "";
+  const hidden = menuHiddenIds();
   MENUS.forEach(m => {
+    if (hidden.includes(m.id)) return;
     const d = document.createElement("div"); d.className = "item"; d.id = m.id;
     d.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${m.svg}</svg><span>${m.label}</span>`;
+    d.onclick = () => (MENU_ACTIONS[m.id] || (() => showToast(m.label + ": coming soon")))();
     menuGrid.appendChild(d);
   });
   syncMenuUI();
 }
 function syncMenuUI() {
-  const md = q("m-desktop"); if (md) md.classList.toggle("on", desktopMode);
-  const mn = q("m-night"); if (mn) mn.classList.toggle("on", nightMode);
+  const toggles: [string, boolean][] = [
+    ["m-desktop", desktopMode], ["m-night", nightMode], ["m-adblock", adblockOn],
+    ["m-imgs", showImages], ["m-netlog", networkLog], ["m-game", gameMode],
+    ["m-readaloud", readAloud], ["m-inco", incognitoMode], ["m-ad", markAdActive],
+    ["m-full", isFullscreen],
+  ];
+  toggles.forEach(([id, on]) => { const el = q(id); if (el) el.classList.toggle("on", on); });
 }
 async function openMenu() {
   overlay = "menu"; menuEl.classList.add("show");
@@ -242,26 +301,579 @@ tabX.onclick = closeOverlay;
 tabNew.onclick = async () => { closeOverlay(); await createTab(undefined, true); setHome(true); };
 
 /* ---- Menu handlers ---- */
-q("m-bkm")!.onclick = () => { closeOverlay(); showToast("Bookmarks: coming soon"); };
-q("m-hist")!.onclick = () => { closeOverlay(); showToast("History: coming soon"); };
-q("m-down")!.onclick = () => { closeOverlay(); showToast("Downloads: coming soon"); };
-q("m-inco")!.onclick = () => { closeOverlay(); showToast("Incognito: auto-clear enabled"); };
-q("m-addbkm")!.onclick = () => { closeOverlay(); showToast("Bookmarked current page"); };
-q("m-desktop")!.onclick = async () => {
+// Each menu item id is looked up and bound after buildMenuUI().
+
+function findJs() {
+  // Find in page: page-local floating bar using the browser's native search.
+  const js = `(()=>{
+    var old=document.getElementById('viaFind');
+    if(old){old.remove();var b=document.getElementById('viaFindBar');if(b)b.remove();return 'off';}
+    var bar=document.createElement('div');
+    bar.id='viaFindBar';
+    bar.style.cssText='position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:999999;display:flex;gap:8px;align-items:center;background:#16171a;border:1px solid #333;border-radius:24px;padding:8px 14px;box-shadow:0 8px 30px rgba(0,0,0,.5);font:14px system-ui;color:#eee;';
+    var inp=document.createElement('input');
+    inp.placeholder='Find in page…';
+    inp.style.cssText='background:transparent;border:0;outline:none;color:#fff;width:220px;font:14px system-ui;';
+    var cnt=document.createElement('span');cnt.style.cssText='color:#9aa0a8;font-size:12px;min-width:40px;text-align:center;';
+    var prev=document.createElement('button');prev.textContent='▲';prev.style.cssText='border:0;background:transparent;color:#9aa0a8;cursor:pointer;font-size:16px;';
+    var next=document.createElement('button');next.textContent='▼';next.style.cssText='border:0;background:transparent;color:#9aa0a8;cursor:pointer;font-size:16px;';
+    var close=document.createElement('button');close.textContent='✕';close.style.cssText='border:0;background:transparent;color:#9aa0a8;cursor:pointer;font-size:14px;';
+    bar.appendChild(inp);bar.appendChild(prev);bar.appendChild(cnt);bar.appendChild(next);bar.appendChild(close);
+    document.documentElement.appendChild(bar);
+    var idx=0,count=0;
+    function doFind(dir){
+      var q=inp.value;if(!q){cnt.textContent='0/0';return;}
+      var found=false;var lim=2000;
+      // Use Selection API to walk text nodes.
+      var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+      var nodes=[];while(walker.nextNode()&&nodes.length<lim)nodes.push(walker.currentNode);
+      var matches=[];
+      nodes.forEach(function(n){var t=n.nodeValue;var i=0;while((i=t.toLowerCase().indexOf(q.toLowerCase(),i))!==-1){matches.push([n,i,q.length]);i+=q.length;}});
+      count=matches.length;
+      if(!count){cnt.textContent='0/0';return;}
+      idx=(idx+dir+count)%count;
+      var m=matches[idx];
+      try{
+        var range=document.createRange();range.setStart(m[0],m[1]);range.setEnd(m[0],m[1]+m[2]);
+        var sel=getSelection();sel.removeAllRanges();sel.addRange(range);
+        m[0].parentElement.scrollIntoView({block:'center'});
+      }catch(e){}
+      cnt.textContent=(idx+1)+'/'+count;
+    }
+    inp.addEventListener('input',function(){idx=0;doFind(0);});
+    inp.addEventListener('keydown',function(ev){if(ev.key==='Enter'){ev.preventDefault();doFind(1);}});
+    prev.onclick=function(){doFind(-1);};next.onclick=function(){doFind(1);};
+    inp.focus();
+    return 'on';
+  })()`;
+  evalInActive(js).catch(()=>{});
+  showToast("Find in page");
+}
+function savePageNow() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = (t && t.url && !t.url.startsWith("about:")) ? t.url : locationIt();
+  const title = t?.title || "page";
+  // Grab rendered HTML through the secure bridge (page sets document.title,
+  // Rust forwards the payload to the frontend, which saves it to disk).
+  (window as any).__viaSavePage = { url, title };
+  evalInActive(`window.__viaSend('savePage',{html:document.documentElement.outerHTML,url:location.href,title:document.title})`).catch(() => {
+    // fallback: fetch raw source (may miss dynamic DOM)
+    fetch(url).then(r => r.text()).then(html => {
+      invoke("save_page", { url, html, title }).then(() => showToast("Page saved to Downloads")).catch(()=>showToast("Save failed"));
+    }).catch(() => showToast("Save failed"));
+  });
+}
+function translatePage() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  if (!url) { showToast("Open a page first"); return; }
+  navigate("https://translate.google.com/translate?sl=auto&tl=en&u=" + encodeURIComponent(url));
+}
+function viewSource() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  if (!url) { showToast("Open a page first"); return; }
+  // WebView2 supports view-source: in a new child window; fallback to fetch-based viewer.
+  evalInActive(`window.open('view-source:'+location.href,'_blank')`).catch(() => {
+    // Host fallback: fetch raw source into a new tab via a data URL.
+    fetch(url).then(r=>r.text()).then(html=>{
+      const data = 'data:text/plain;charset=utf-8,' + encodeURIComponent(html);
+      createTab(data);
+    }).catch(()=>showToast("Unable to load source"));
+  });
+}
+function toggleFullscreen() {
+  const w = window as any;
+  const fs = w.__TAURI__?.window?.getCurrentWindow?.();
+  if (fs) {
+    fs.setFullscreen(!isFullscreen).then(() => { isFullscreen = !isFullscreen; syncMenuUI(); }).catch(()=>{});
+  } else {
+    isFullscreen = !isFullscreen; syncMenuUI();
+    showToast(isFullscreen ? "Full-screen on" : "Full-screen off");
+  }
+}
+function toggleShowImages() {
+  showImages = !showImages;
+  const css = showImages ? "" : "img,picture,video{{visibility:hidden!important}}";
+  evalInActive(`var s=document.getElementById('via-img');if(s)s.remove();if(${showImages ? "false" : "true"}){s=document.createElement('style');s.id='via-img';s.textContent=${JSON.stringify(css)};document.documentElement.appendChild(s);}`).catch(()=>{});
+  persistSettings({ show_images: showImages });
+  syncMenuUI(); showToast(showImages ? "Images shown" : "Images hidden");
+}
+function openSniffer() {
+  // Page-local overlay listing captured media resources.
+  const js = `(()=>{
+    var old=document.getElementById('viaSniff');
+    if(old){old.remove();return;}
+    var items=(window.__viaSniff?window.__viaSniff():[]);
+    var box=document.createElement('div');
+    box.id='viaSniff';
+    box.style.cssText='position:fixed;right:14px;top:14px;z-index:999999;width:340px;max-height:70vh;overflow:auto;background:rgba(18,19,22,.97);border:1px solid #333;border-radius:16px;padding:14px;font:13px system-ui;color:#eee;box-shadow:0 10px 40px rgba(0,0,0,.6);';
+    var h=document.createElement('div');h.style.cssText='display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;font-weight:600;';
+    h.innerHTML='<span>Resource sniffer</span><button id="viaSniffX" style="background:none;border:0;color:#9aa0a8;cursor:pointer;font-size:15px;">✕</button>';
+    box.appendChild(h);
+    var list=document.createElement('div');
+    if(!items.length){list.textContent='No media resources detected yet. Play a video or reload the page.';list.style.cssText='color:#9aa0a8;padding:8px 0;';}
+    items.forEach(function(u){
+      var row=document.createElement('div');row.style.cssText='display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #23252a;word-break:break-all;';
+      var a=document.createElement('a');a.href=u;a.textContent=u.replace(/^https?:\\/\\//,'').slice(0,42);a.target='_blank';a.style.cssText='color:#7aa9ff;text-decoration:none;flex:1;';
+      a.onclick=function(e){e.preventDefault();window.open(u,'_blank');};
+      row.appendChild(a);list.appendChild(row);
+    });
+    box.appendChild(list);
+    document.documentElement.appendChild(box);
+    document.getElementById('viaSniffX').onclick=function(){box.remove();};
+  })()`;
+  evalInActive(js).catch(()=>showToast("Resource sniffer unavailable here"));
+}
+function toggleNetworkLog() {
+  networkLog = !networkLog;
+  persistSettings({ network_log: networkLog });
+  syncMenuUI(); showToast(networkLog ? "Network log on" : "Network log off");
+  closeOverlay();
+  if (networkLog) { openPanel("sniff"); if (hasNavigated) invoke("eval_tab", { id: activeId!, js: "location.reload()" }).catch(()=>{}); }
+}
+function scanQr() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : locationIt();
+  openPanel("qr", url);
+}
+function addToHome() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  if (!url) { showToast("Open a page first"); return; }
+  invoke("add_bookmark", { url, title: t?.title || url, folder: "home" }).then(() => showToast("Added to home screen")).catch(() => showToast("Already on home screen"));
+}
+function toggleReadAloud() {
+  readAloud = !readAloud;
+  persistSettings({ read_aloud_enabled: readAloud });
+  const js = readAloud
+    ? `(function(){if(window.__viaSpeech){window.speechSynthesis.resume();return;}var txt=(document.body.innerText||'').trim().slice(0,8000);if(!txt){return false;}var u=new SpeechSynthesisUtterance(txt);u.rate=1;u.pitch=1;window.__viaSpeech=u;window.speechSynthesis.cancel();window.speechSynthesis.speak(u);})()`
+    : `window.speechSynthesis.cancel();window.__viaSpeech=null;`;
+  evalInActive(js).catch(()=>{});
+  syncMenuUI(); showToast(readAloud ? "Reading aloud…" : "Read aloud stopped");
+}
+function aiPanel() { openPanel("ai"); }
+function orientationPick() { openPanel("orient"); }
+function uaPanel() { openPanel("ua"); }
+function toggleAdblock() {
+  adblockOn = !adblockOn;
+  persistSettings({ adblock_enabled: adblockOn });
+  evalInActive(`var s=document.querySelectorAll('style[data-via]');s.forEach(function(x){x.remove();});location.reload();`).catch(()=>{});
+  syncMenuUI(); showToast(adblockOn ? "Ad blocking on" : "Ad blocking off");
+}
+function markAsAdMode() {
+  markAdActive = !markAdActive;
+  syncMenuUI(); closeOverlay();
+  if (!markAdActive) { evalInActive(`var p=document.getElementById('viaPick');if(p)p.remove();`).catch(()=>{}); showToast("Mark as ad cancelled"); return; }
+  const js = `(()=>{
+    var old=document.getElementById('viaPick');
+    if(old)old.remove();
+    var tip=document.createElement('div');
+    tip.id='viaPick';
+    tip.style.cssText='position:fixed;inset:0;z-index:999998;background:rgba(0,0,0,.25);cursor:crosshair;';
+    var lab=document.createElement('div');
+    lab.style.cssText='position:fixed;top:10px;left:50%;transform:translateX(-50%);background:#16171a;border:1px solid #333;border-radius:20px;padding:8px 16px;color:#fff;font:13px system-ui;z-index:999999;';
+    lab.textContent='Click an element to block it (Esc to cancel)';
+    tip.appendChild(lab);
+    var cur=null;
+    function clear(){if(cur){cur.style.outline='';cur=null;}}
+    tip.addEventListener('mousemove',function(ev){
+      var el=document.elementFromPoint(ev.clientX,ev.clientY);
+      if(!el||el===tip||el===lab)return;
+      clear();
+      cur=el;el.style.outline='2px solid #f44';
+    });
+    function selectorFor(el){
+      if(el.id)return '#'+CSS.escape(el.id);
+      var p=[];
+      var n=el, c=0;
+      while(n&&n.nodeType===1&&c<4){
+        var s=CSS.escape(n.tagName.toLowerCase());
+        if(n.id)s+=' #'+CSS.escape(n.id);
+        else if(n.className&&typeof n.className==='string'){
+          var cls=n.className.trim().split(/\\s+/).slice(0,2).map(CSS.escape).join('.');
+          if(cls)s+='.'+cls;
+        }
+        p.unshift(s);n=n.parentElement;c++;
+      }
+      return p.join(' > ');
+    }
+    tip.addEventListener('click',function(ev){
+      ev.preventDefault();ev.stopPropagation();
+      var el=cur||document.elementFromPoint(ev.clientX,ev.clientY);
+      if(!el)return;
+      var sel=selectorFor(el);
+      var host=location.hostname;
+      tip.remove();
+      window.getSelection().removeAllRanges();
+      // Send to host via the secure VIA: message bus.
+      try{ window.__viaSend('markAd',{domain:host,selector:sel}); }catch(e){}
+      // Also apply immediately via page-local hide + localStorage persistence.
+      var style=document.createElement('style');style.textContent=sel+' { display: none !important; }';document.head.appendChild(style);
+      var list=JSON.parse(localStorage.getItem('via.marked')||'[]');
+      if(list.indexOf(sel)===-1)list.push(sel);
+      localStorage.setItem('via.marked',JSON.stringify(list));
+      var note=document.createElement('div');note.style.cssText='position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:#222;color:#fff;padding:8px 14px;border-radius:16px;font:13px system-ui;z-index:999999;';
+      note.textContent='Blocked: '+sel;document.documentElement.appendChild(note);
+      setTimeout(function(){note.remove();},1800);
+    });
+    document.addEventListener('keydown',function kd(ev){if(ev.key==='Escape'){tip.remove();document.removeEventListener('keydown',kd);}},{once:false});
+    document.documentElement.appendChild(tip);
+  })()`;
+  evalInActive(js).catch(()=>showToast("Mark as ad unavailable here"));
+}
+function textSizePick() { openPanel("textsize"); }
+function clearDataNow() {
+  closeOverlay();
+  invoke("clear_data").then(() => showToast("Data cleared")).catch(()=>showToast("Failed to clear"));
+}
+function customizeMenu() { openPanel("customize"); }
+function reloadActive() {
+  closeOverlay();
+  if (hasNavigated && activeId != null) invoke("eval_tab", { id: activeId, js: "location.reload()" }).catch(()=>{});
+  else setHome(true);
+}
+function siteConfig() { openPanel("sitecfg"); }
+function scriptsManager() { openPanel("scripts"); }
+function printTab() {
+  closeOverlay();
+  evalInActive("window.print()").catch(()=>showToast("Print unavailable"));
+}
+let readerOn = false;
+function readerMode() {
+  closeOverlay();
+  if (readerOn) {
+    invoke<string>("reader_close").then(js => evalInActive(js)).catch(()=>{});
+    readerOn = false;
+    showToast("Reader closed");
+    return;
+  }
+  invoke<string>("reader_bundle").then(js => evalInActive(js)).catch(() => showToast("Reader mode unavailable"));
+  readerOn = true;
+  showToast("Reader mode");
+}
+function openWith() {
+  closeOverlay();
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : locationIt();
+  invoke("open_external", { url }).then(()=>{}).catch(()=>showToast("Open with: choose your default browser"));
+}
+function toggleGame() {
+  gameMode = !gameMode;
+  persistSettings({ game_mode: gameMode });
+  syncMenuUI(); showToast(gameMode ? "Game mode on — sniffer & extras off" : "Game mode off");
+}
+function addFavorite() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  if (!url) { showToast("Open a page first"); return; }
+  invoke("add_bookmark", { url, title: t?.title || url, folder: "favorites" }).then(() => showToast("Added to favorites")).catch(() => showToast("Already added"));
+}
+function reportAbuse() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  closeOverlay();
+  navigate("https://safebrowsing.google.com/safebrowsing/report_phish/?url=" + encodeURIComponent(url));
+}
+function openBookmarks() { closeOverlay(); openPanel("bookmarks"); }
+function openHistoryPanel() { closeOverlay(); openPanel("history"); }
+function openDownloads() { closeOverlay(); openPanel("downloads"); }
+function toggleIncognito() {
+  incognitoMode = !incognitoMode;
+  persistSettings({ clear_on_exit: incognitoMode });
+  syncMenuUI(); showToast(incognitoMode ? "Incognito on — no history, auto-clear" : "Incognito off");
+}
+function addBookmarkNow() {
+  const t = tabs.find(x => x.id === activeId);
+  const url = t?.url && !t.url.startsWith("about:") ? t.url : "";
+  if (!url) { showToast("Open a page first"); return; }
+  invoke("add_bookmark", { url, title: t?.title || url, folder: "" }).then(() => showToast("Bookmark added")).catch(() => showToast("Already bookmarked"));
+}
+function toggleDesktop() {
   desktopMode = !desktopMode;
   const ua = desktopMode ? "Desktop" : "Mobile";
-  try { await invoke("set_settings", { settings: { ...getDefault(), desktop_mode: desktopMode, ua_mode: ua } }); } catch {}
-  if (hasNavigated && activeId != null) await invoke("eval_tab", { id: activeId, js: "location.reload()" }).catch(()=>{});
+  persistSettings({ desktop_mode: desktopMode, ua_mode: ua });
+  if (hasNavigated && activeId != null) invoke("eval_tab", { id: activeId, js: "location.reload()" }).catch(()=>{});
   syncMenuUI(); showToast(desktopMode ? "Desktop site" : "Mobile site"); closeOverlay();
+}
+function toggleNight() {
+  nightMode = !nightMode;
+  persistSettings({ night_mode: nightMode });
+  invoke("set_night_mode", { enabled: nightMode }).catch(()=>{});
+  syncMenuUI(); showToast(nightMode ? "Night mode on" : "Night mode off"); closeOverlay();
+}
+function openSettingsPanel() { closeOverlay(); openPanel("settings"); }
+
+// Panel handler registry (per menu item id)
+const MENU_ACTIONS: Record<string, () => void> = {
+  "m-find": findJs, "m-save": savePageNow, "m-saved": () => openDownloads(),
+  "m-trans": translatePage, "m-src": viewSource, "m-full": toggleFullscreen,
+  "m-imgs": toggleShowImages, "m-sniff": openSniffer, "m-ua": uaPanel,
+  "m-netlog": toggleNetworkLog, "m-qr": scanQr, "m-homeadd": addToHome,
+  "m-readaloud": toggleReadAloud, "m-ai": aiPanel, "m-orient": orientationPick,
+  "m-adblock": toggleAdblock, "m-ad": markAsAdMode, "m-textsize": textSizePick,
+  "m-clear": clearDataNow, "m-custommenu": customizeMenu, "m-reload": reloadActive,
+  "m-sitecfg": siteConfig, "m-scripts": scriptsManager, "m-print": printTab,
+  "m-reader": readerMode, "m-openwith": openWith, "m-game": toggleGame,
+  "m-fav": addFavorite, "m-rpt": reportAbuse, "m-bkm": openBookmarks,
+  "m-hist": openHistoryPanel, "m-down": openDownloads, "m-inco": toggleIncognito,
+  "m-addbkm": addBookmarkNow, "m-desktop": toggleDesktop, "m-night": toggleNight,
+  "m-settings": openSettingsPanel,
 };
-q("m-tools")!.onclick = async () => {
-  closeOverlay();
-  if (activeId != null) await invoke("eval_tab", { id: activeId, js: "window.open('view-source:'+location.href,'_blank')" }).catch(()=>{});
-};
-q("m-settings")!.onclick = () => { closeOverlay(); showToast("Settings: coming soon"); };
 
 function getDefault(): Settings {
-  return { homepage: "about:blank", search_engine: searchEngine, ua_mode: desktopMode ? "Desktop" : "Mobile", custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_css: "", user_js: "", night_mode: nightMode, desktop_mode: desktopMode };
+  return {
+    homepage: "about:blank", search_engine: searchEngine, ua_mode: desktopMode ? "Desktop" : "Mobile",
+    custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_js: "",
+    night_mode: nightMode, desktop_mode: desktopMode, text_size: textSize, show_images: showImages,
+    network_log: networkLog, game_mode: gameMode, read_aloud_enabled: readAloud,
+    user_css: userCss, scripts, sites, pages_log: [],
+  };
+}
+function persistSettings(mut?: Partial<Settings>) {
+  try { invoke("set_settings", { settings: { ...getDefault(), ...(mut || {}) } }); } catch {}
+}
+
+/* ---- Panels (bookmarks/history/downloads/settings/etc.) ---- */
+function qs<T extends HTMLElement = HTMLElement>(sel: string): T { return document.querySelector(sel) as T; }
+function panelHTML(title: string, body: string): string {
+  return `<div id="panel"><div class="pc">
+    <div class="ph"><span class="grip"></span><b>${title}</b><button class="close" id="p-close">✕</button></div>
+    <div class="pb">${body}</div>
+  </div></div>`;
+}
+function closePanel() {
+  const p = q("panel"); if (p) p.remove();
+  overlay = "none";
+  if (hasNavigated) showActiveWebview();
+}
+async function openPanel(kind: string, arg?: string) {
+  closePanel();
+  overlay = "panel";
+  await hideActiveWebview();
+  const body = document.createElement("div"); body.id = "panel";
+  const p = document.createElement("div"); p.className = "pc";
+  let title = ""; let content = "";
+  const close = () => closePanel();
+
+  const mkBtn = (label: string, act: () => void) => { const b = document.createElement("button"); b.className = "pbtn"; b.textContent = label; b.onclick = act; return b; };
+
+  if (kind === "bookmarks") {
+    title = "Bookmarks";
+    bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
+    const items = bookmarks.map(b => `<div class="prow"><span class="ptitle">${esc(b.title || b.url)}</span><small>${esc(b.url)}</small></div>`).join("") || "<div class='empty'>No bookmarks yet</div>";
+    content = `<div class="plist">${items}</div>`;
+  } else if (kind === "history") {
+    title = "History";
+    historyItems = await invoke<HistItem[]>("list_history").catch(() => []);
+    const items = historyItems.slice(0, 100).map(h => `<div class="prow"><span class="ptitle">${esc(h.title || h.url)}</span><small>${esc(h.url)}</small></div>`).join("") || "<div class='empty'>No history yet</div>";
+    content = `<div class="plist">${items}</div><button class="pbtn danger" id="hclear">Clear history</button>`;
+  } else if (kind === "downloads") {
+    title = "Downloads";
+    downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
+    const items = downloads.map(d => `<div class="prow"><span class="ptitle">${esc(d.title)}</span><small>${esc(d.path)}</small></div>`).join("") || "<div class='empty'>No saved pages / downloads</div>";
+    content = `<div class="plist">${items}</div>`;
+  } else if (kind === "settings") {
+    title = "Settings";
+    content = `
+      <div class="prow"><span class="ptitle">Search engine</span>
+        <select class="pselect" id="set-engine">
+          ${Object.keys(ENGINES).map(e => `<option ${e === searchEngine ? "selected" : ""}>${e}</option>`).join("")}
+        </select></div>
+      <div class="prow"><span class="ptitle">User-Agent</span>
+        <select class="pselect" id="set-ua">
+          <option ${desktopMode ? "selected" : ""}>Desktop</option>
+          <option ${!desktopMode ? "selected" : ""}>Mobile</option>
+        </select></div>
+      <div class="prow"><span class="ptitle">Ad blocking</span><button class="pbtn" id="set-adb">${adblockOn ? "On" : "Off"}</button></div>
+      <div class="prow"><span class="ptitle">Clear data on exit (Incognito)</span><button class="pbtn" id="set-clear">${incognitoMode ? "On" : "Off"}</button></div>
+      <div class="prow"><span class="ptitle">Custom CSS</span><textarea class="ptext" id="set-css" placeholder="body { }">${esc(userCss)}</textarea></div>
+      <button class="pbtn primary" id="set-save">Save settings</button>`;
+  } else if (kind === "scripts") {
+    title = "Scripts";
+    const rows = scripts.map((sc, i) => `<div class="prow"><span class="ptitle">${esc(sc.name || "Script")}</span><small>${esc(sc.match_urls || "all pages")}</small><button class="pbtn" data-del="${i}">Delete</button></div>`).join("") || "<div class='empty'>No scripts yet</div>";
+    content = `<div class="plist">${rows}</div>
+      <button class="pbtn primary" id="sc-new">+ New script</button>
+      <div id="sc-edit"></div>`;
+  } else if (kind === "sitecfg") {
+    title = "Site configuration";
+    const rows = sites.map((sc, i) => `<div class="prow"><span class="ptitle">${esc(sc.host)}</span><small>UA: ${sc.ua_mode || "default"} · Adblock: ${sc.adblock_enabled ? "on" : "off"}</small><button class="pbtn" data-rm="${i}">Remove</button></div>`).join("") || "<div class='empty'>No per-site config</div>";
+    content = `<div class="plist">${rows}</div>
+      <div class="prow"><input class="pinput" id="sc-host" placeholder="example.com"></div>
+      <div class="prow"><select class="pselect" id="sc-ua"><option value="">Default</option><option>Desktop</option><option>Mobile</option></select>
+      <label><input type="checkbox" id="sc-adb" checked> Adblock on</label></div>
+      <button class="pbtn primary" id="sc-save">Add site config</button>`;
+  } else if (kind === "ua") {
+    title = "User-agent";
+    content = `<div class="plist">
+      <div class="prow" data-ua="Desktop"><span class="ptitle">Desktop</span><small>Windows desktop UA</small>${desktopMode ? " <span class='pin'>✓</span>" : ""}</div>
+      <div class="prow" data-ua="Mobile"><span class="ptitle">Mobile</span><small>Android phone UA</small>${!desktopMode ? " <span class='pin'>✓</span>" : ""}</div>
+      <div class="prow" data-ua="Via"><span class="ptitle">Via Mobile</span><small>Via/7.2.1 UA</small></div>
+    </div><button class="pbtn" id="ua-default">Reset to default</button>`;
+  } else if (kind === "textsize") {
+    title = "Text size";
+    content = `
+      <div class="prow"><span class="ptitle">${Math.round(textSize * 100)}%</span>
+        <input type="range" id="ts-range" min="0.5" max="2" step="0.1" value="${textSize}"></div>
+      <div class="prow"><button class="pbtn" id="ts-reset">Reset to 100%</button></div>`;
+  } else if (kind === "customize") {
+    title = "Customize menu";
+    const hidden = menuHiddenIds();
+    const ids = Object.keys(MENU_ACTIONS);
+    const rows = ids.map(id => {
+      const m = MENUS.find(x => x.id === id);
+      if (!m) return "";
+      const off = hidden.includes(id) ? " off" : "";
+      return `<div class="prow${off}" data-cid="${id}"><span class="ptitle">${esc(m.label)}</span><span class="pin">${hidden.includes(id) ? "✕" : "✓"}</span></div>`;
+    }).join("");
+    content = `<div class="plist" id="cust-list">${rows}</div><div class="empty">Tap an item to show/hide it in the main menu</div>`;
+  } else if (kind === "sniff") {
+    title = "Network log";
+    let logRows: string[][] = [];
+    try { logRows = await invoke<string[][]>("network_log", { rows: [], clear: false }); } catch {}
+    const all: string[] = [];
+    logRows.slice(-200).forEach(r => { if (r[0] && !all.includes(r[0])) all.push(r[0]); });
+    snifferItems.forEach(u => { if (u && !all.includes(u)) all.push(u); });
+    content = `<div class="plist" id="sniff-list">${all.map(u => `<div class="prow"><a class="ptitle" href="${esc(u)}" target="_blank">${esc(u)}</a></div>`).join("") || "<div class='empty'>Enable Network log, then load a page to capture requests</div>"}</div><button class="pbtn danger" id="log-clear">Clear log</button>`;
+  } else if (kind === "qr") {
+    title = "QR code";
+    content = `<div class="prow"><span class="ptitle">${esc(arg || "")}</span></div>
+      <div class="qr" id="qr-box"></div>
+      <div class="empty">Install the QR extension or use your camera phone (URL copied to clipboard)</div>`;
+  } else if (kind === "orient") {
+    title = "Orientation";
+    content = `<div class="prow"><button class="pbtn" id="or-port">Portrait (9:16)</button><button class="pbtn" id="or-land">Landscape (16:9)</button><button class="pbtn" id="or-def">Reset</button></div>`;
+  } else if (kind === "ai") {
+    title = "AI assistant";
+    content = `<div class="prow"><span class="ptitle">Select an AI service to open in a new tab</span></div>
+      <div class="plist">
+        <div class="prow" data-ai="https://chat.openai.com"><span class="ptitle">ChatGPT</span></div>
+        <div class="prow" data-ai="https://gemini.google.com"><span class="ptitle">Gemini</span></div>
+        <div class="prow" data-ai="https://claude.ai"><span class="ptitle">Claude</span></div>
+      </div>`;
+  } else {
+    title = "Via Browser";
+    content = `<div class="empty">Feature panel</div>`;
+  }
+
+  p.innerHTML = panelHTML(title, content);
+  body.appendChild(p);
+  const pc = p.querySelector(".pc") as HTMLElement;
+  qs("#p-close").onclick = close;
+  // slide-in animation
+  requestAnimationFrame(() => pc.classList.add("on"));
+  // overlay click to close
+  p.addEventListener("mousedown", (e) => { if (e.target === p) close(); });
+
+  // per-panel bindings
+  if (kind === "history") {
+    qs("#hclear").onclick = async () => { invoke("clear_history"); historyItems = []; closePanel(); showToast("History cleared"); };
+  }
+  if (kind === "sniff") {
+    const lc = p.querySelector("#log-clear") as HTMLElement; if (lc) lc.onclick = async () => { await invoke("network_log", { rows: [], clear: true }); closePanel(); openPanel("sniff"); };
+  }
+  if (kind === "scripts") {
+    qs("#sc-new").onclick = () => {
+      const sc: UserScript = { id: "sc" + Date.now(), name: "New script", match_urls: "", code: "", enabled: true };
+      const ed = qs("#sc-edit");
+      ed.innerHTML = `<div class="prow"><input class="pinput" id="ed-name" value="New script" placeholder="name"></div>
+        <div class="prow"><input class="pinput" id="ed-match" placeholder="URL pattern (regex, empty=all)"></div>
+        <textarea class="ptext" id="ed-code" placeholder="// your JS here"></textarea>
+        <button class="pbtn primary" id="ed-save">Save script</button>`;
+      qs("#ed-save").onclick = async () => {
+        sc.name = (qs("#ed-name") as HTMLInputElement).value || "New script";
+        sc.match_urls = (qs("#ed-match") as HTMLInputElement).value;
+        sc.code = (qs("#ed-code") as HTMLTextAreaElement).value;
+        scripts.push(sc);
+        await invoke("save_script", { script: sc }).catch(()=>{});
+        persistSettings({ scripts });
+        closePanel(); openPanel("scripts"); showToast("Script saved (reload page to apply)");
+      };
+    };
+    (p.querySelectorAll<HTMLElement>("[data-del]")).forEach(b => b.onclick = async () => {
+      const i = +b.dataset.del!; const sc = scripts[i]; if (!sc) return;
+      scripts.splice(i, 1); await invoke("delete_script", { id: sc.id }).catch(()=>{}); persistSettings({ scripts });
+      closePanel(); openPanel("scripts");
+    });
+  }
+  if (kind === "sitecfg") {
+    qs("#sc-save").onclick = async () => {
+      const host = (qs("#sc-host") as HTMLInputElement).value.trim();
+      if (!host) { showToast("Enter a host"); return; }
+      const cfg: SiteConfig = { host, ua_mode: (qs("#sc-ua") as HTMLSelectElement).value, adblock_enabled: (qs("#sc-adb") as HTMLInputElement).checked };
+      sites = sites.filter(x => x.host !== host); sites.push(cfg);
+      await invoke("save_site_config", { cfg }).catch(()=>{}); persistSettings({ sites });
+      closePanel(); openPanel("sitecfg"); showToast("Site config saved");
+    };
+    (p.querySelectorAll<HTMLElement>("[data-rm]")).forEach(b => b.onclick = async () => {
+      const i = +b.dataset.rm!; const sc = sites[i]; if (!sc) return;
+      sites.splice(i, 1); await invoke("delete_site_config", { host: sc.host }).catch(()=>{}); persistSettings({ sites });
+      closePanel(); openPanel("sitecfg");
+    });
+  }
+  if (kind === "ua") {
+    (p.querySelectorAll<HTMLElement>("[data-ua]")).forEach(row => row.onclick = () => {
+      const mode = row.dataset.ua!;
+      desktopMode = mode === "Desktop";
+      persistSettings({ desktop_mode: desktopMode, ua_mode: mode });
+      if (hasNavigated && activeId != null) invoke("eval_tab", { id: activeId, js: "location.reload()" }).catch(()=>{});
+      closePanel(); syncMenuUI(); showToast("User-agent: " + mode);
+    });
+    qs("#ua-default").onclick = () => { desktopMode = true; persistSettings({ desktop_mode: true, ua_mode: "Desktop" }); closePanel(); showToast("UA reset"); };
+  }
+  if (kind === "textsize") {
+    qs("#ts-range").oninput = (e: any) => { textSize = +e.target.value; (qs(".ptitle") as HTMLElement).textContent = Math.round(textSize*100) + "%"; };
+    qs("#ts-reset").onclick = () => { textSize = 1; persistSettings({ text_size: 1 }); showToast("Text size reset"); closePanel(); };
+    const range = qs("#ts-range"); const commit = () => { persistSettings({ text_size: textSize }); evalInActive("location.reload()").catch(()=>{}); showToast("Text size set"); closePanel(); };
+    range.onchange = commit;
+  }
+  if (kind === "customize") {
+    (p.querySelectorAll<HTMLElement>("#cust-list .prow")).forEach(row => {
+      row.onclick = () => {
+        const id = row.dataset.cid!;
+        let hidden = menuHiddenIds();
+        const idx = hidden.indexOf(id);
+        if (idx !== -1) hidden.splice(idx, 1); else hidden.push(id);
+        localStorage.setItem("via.menuHidden", JSON.stringify(hidden));
+        row.classList.toggle("off", idx !== -1);
+        (row.querySelector(".pin") as HTMLElement).textContent = idx !== -1 ? "✓" : "✕";
+        buildMenuUI();
+      };
+    });
+  }
+  if (kind === "sniff") {
+    (p.querySelectorAll<HTMLElement>("#sniff-list a")).forEach(a => a.onclick = (e) => { e.preventDefault(); window.open(a.getAttribute("href")!, "_blank"); });
+  }
+  if (kind === "qr") {
+    // Simple clipboard copy + show a QR via external image is not feasible offline; show URL.
+    const box = qs("#qr-box");
+    box.innerHTML = `<code style="word-break:break-all;font-size:11px;">${esc(arg || "")}</code>`;
+    navigator.clipboard?.writeText(arg || "").catch(()=>{});
+  }
+  if (kind === "orient") {
+    const fs = (window as any).__TAURI__?.window?.getCurrentWindow?.();
+    qs("#or-port").onclick = () => { if (fs) fs.setSize({ width: 450, height: 900 }); closePanel(); };
+    qs("#or-land").onclick = () => { if (fs) fs.setSize({ width: 1000, height: 600 }); closePanel(); };
+    qs("#or-def").onclick = () => { if (fs) fs.setSize({ width: 1280, height: 800 }); closePanel(); };
+  }
+  if (kind === "ai") {
+    (p.querySelectorAll<HTMLElement>("[data-ai]")).forEach(row => row.onclick = () => { closePanel(); createTab(row.dataset.ai!); });
+  }
+  if (kind === "settings") {
+    qs("#set-save").onclick = () => {
+      searchEngine = (qs("#set-engine") as HTMLSelectElement).value;
+      desktopMode = (qs("#set-ua") as HTMLSelectElement).value === "Desktop";
+      adblockOn = (qs("#set-adb") as HTMLElement).textContent === "On";
+      incognitoMode = (qs("#set-clear") as HTMLElement).textContent === "On";
+      userCss = (qs("#set-css") as HTMLTextAreaElement).value;
+      persistSettings({ search_engine: searchEngine, desktop_mode: desktopMode, ua_mode: desktopMode ? "Desktop" : "Mobile", adblock_enabled: adblockOn, clear_on_exit: incognitoMode, user_css: userCss });
+      closePanel(); showToast("Settings saved");
+    };
+    qs("#set-adb").onclick = () => { qs("#set-adb").textContent = qs("#set-adb").textContent === "On" ? "Off" : "On"; };
+    qs("#set-clear").onclick = () => { qs("#set-clear").textContent = qs("#set-clear").textContent === "On" ? "Off" : "On"; };
+  }
+
+  document.body.appendChild(body);
 }
 
 /* ---- Keyboard ---- */
@@ -273,14 +885,49 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
 });
 
 /* ---- Backend events ---- */
-listen<{ id: number; url: string }>("tab-url", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.url = ev.payload.url; renderTabGrid(); } });
+listen<{ id: number; url: string }>("tab-url", ev => {
+  const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.url = ev.payload.url; renderTabGrid(); }
+  readerOn = false;
+  if (!incognitoMode && ev.payload.url && !ev.payload.url.startsWith("about:")) {
+    invoke("add_history", { url: ev.payload.url, title: t?.title || ev.payload.url }).catch(()=>{});
+  }
+});
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
+
+// Secure page->host bridge messages (VIA: prefix, forwarded by Rust).
+listen<{ id: number; msg: string }>("via-msg", async ev => {
+  let arr: any[] = [];
+  try { arr = JSON.parse(ev.payload.msg); } catch { return; }
+  const [action, data] = arr;
+  if (action === "markAd" && data?.selector) {
+    const host = data.domain || "";
+    try { await invoke("mark_as_ad", { domain: host, selector: data.selector }); } catch {}
+    // Re-inject so the new rule applies immediately.
+    await invoke("eval_tab", { id: ev.payload.id, js: "location.reload()" }).catch(()=>{});
+    showToast("Marked as ad: " + data.selector);
+  } else if (action === "savePage" && data?.html) {
+    const wrap = (window as any).__viaSavePage;
+    const url = data.url || wrap?.url || locationIt();
+    const title = (data.title && data.title.indexOf("VIA:") !== 0 ? data.title : null) || wrap?.title || "page";
+    invoke("save_page", { url, html: data.html, title }).then(() => showToast("Page saved to Downloads")).catch(() => showToast("Save failed"));
+  } else if (action === "netlog" && data?.url) {
+    if (networkLog) {
+      const t = tabs.find(x => x.id === ev.payload.id);
+      const row = [data.url, data.type || "request", String(Date.now())];
+      invoke("network_log", { rows: [row], clear: false }).catch(()=>{});
+      snifferItems.push(data.url);
+    }
+  }
+});
 
 /* ---- Boot: show pure-black homepage, webview hidden ---- */
 (async () => {
   try {
     const s: Settings = await invoke("get_settings");
     searchEngine = s.search_engine; nightMode = s.night_mode; desktopMode = s.desktop_mode;
+    textSize = s.text_size || 1; showImages = s.show_images !== false; networkLog = !!s.network_log;
+    gameMode = !!s.game_mode; readAloud = !!s.read_aloud_enabled; adblockOn = s.adblock_enabled !== false;
+    scripts = s.scripts || []; sites = s.sites || []; userCss = s.user_css || "";
   } catch {}
   await createTab(undefined, true); // create a tab; webview stays hidden (about:blank)
   buildMenuUI();

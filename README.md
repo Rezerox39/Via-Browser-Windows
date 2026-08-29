@@ -31,18 +31,40 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
   (no external site is loaded on launch; the webview stays hidden until you
   search/navigate). A 5-icon bottom navigation bar capped at a phone-like
   500px (Back / Forward / Home / Tabs / Menu), a floating address bar, a
-  card-grid tab switcher, and a dark 4-column slide-up grid menu.
+  card-grid tab switcher, and a dark 4-column scrollable slide-up grid menu
+  with all of Via's tools.
 - **Tabs** — real parallel tabs (each is a native WebView2 child webview);
-  visual card grid switcher. `Ctrl+T`, `Ctrl+W`, `Ctrl+L`.
-- **Omnibox** — floating address/search bar with live suggestions
-  (Google / Bing / DuckDuckGo / Baidu).
-- **Ad & tracker blocker** — Url-block at request time (fetch/XHR) plus
+  visual card grid switcher with live titles/URLs. `Ctrl+T`, `Ctrl+W`, `Ctrl+L`.
+- **Omnibox + routing** — the address bar round-trips through a Rust
+  `parse_and_load_url` command (Via-style URL vs. search detection) so
+  `github.com` loads `https://github.com` and anything else searches the
+  active engine (Google / Bing / DuckDuckGo / Baidu) with live suggestions.
+- **Full Via menu (37 tools)** — Find in page, Save / Saved pages, Translate,
+  View source, Full-screen, Show images, Resource sniffer, User-agent,
+  Network log, Scan QR, Add to home screen, Read aloud, AI, Orientation,
+  Ad blocking, Mark as ad, Text size, Clear data, Customize menu, Reload,
+  Site configuration, Scripts, Print/PDF, Reader mode, Open with, Game mode,
+  Add favorite, Report abuse, Bookmarks, History, Downloads, Incognito,
+  Add bookmark, Desktop site, Night mode, Settings.
+- **Reader mode (ported from the APK)** — bundles Via's actual
+  `Readability.js` + readerable-detection + reader renderer/CSS extracted
+  from the decompiled Android sources (`j6/w.java`, `j6/c0.java`), with
+  next/prev-chapter navigation links.
+- **Resource sniffer** — injected capture of media URLs
+  (`.mp4/.mp3/.m3u8/...`) plus a live Network-log panel backed by Rust.
+- **Mark as ad** — click-to-block element picker that persists a cosmetic
+  filter rule per domain and ships it into the ad-blocking pipeline.
+- **Ad & tracker blocker** — URL-block at request time (fetch/XHR) plus
   cosmetic content hiding using Via's bundled EasyList-derived filter list
-  (extracted from `simple.txt` in the Android APK).
-- **User scripts & styles** — inject custom CSS and JS per page.
+  (extracted from `simple.txt` in the Android APK), with per-site overrides.
+- **User scripts** — Tampermonkey-style script manager (name + URL match +
+  code) stored in settings; Via's GM API spec is the reference.
 - **Night mode** — full-window color inversion like Via on Android.
-- **Desktop / Mobile toggle** — instant User-Agent switch + reload.
-- **Privacy** — clear cache & history now, or automatically on exit.
+- **Desktop / Mobile / Via UA** — quick User-Agent switch + reload.
+- **Privacy** — clear cache & history, Incognito (no history + auto-clear on
+  exit), and a cookie inspector.
+- **Persistence** — bookmarks, history, downloads/saved pages, scripts,
+  per-site configuration, custom CSS, and custom filters all survive restarts.
 
 ## Install & run on Windows
 

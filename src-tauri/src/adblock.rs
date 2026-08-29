@@ -1,7 +1,9 @@
 use serde::Serialize;
-use std::sync::OnceLock;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 static FILTERS: OnceLock<FilterBlocker> = OnceLock::new();
+static USER_FILTERS: OnceLock<Mutex<FilterBlocker>> = OnceLock::new();
 
 #[derive(Clone, Serialize)]
 pub struct BlockResult {
@@ -28,7 +30,7 @@ pub struct FilterBlocker {
     cosmetic: Vec<CosmeticRule>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct CosmeticRule {
     domains: Option<Vec<String>>,
     selector: String,
@@ -143,7 +145,6 @@ impl FilterBlocker {
         None
     }
 
-
     /// Concatenated host suffixes used to build a blocking regex in injected JS.
     pub fn host_list(&self) -> Vec<&str> {
         self.rules
@@ -155,16 +156,6 @@ impl FilterBlocker {
             .collect()
     }
 
-    /// Cosmetic rules that apply globally (no domain restriction), joined as CSS.
-    pub fn global_cosmetic_css(&self) -> String {
-        let mut css = String::new();
-        for c in &self.cosmetic {
-            if c.domains.is_none() {
-                css.push_str(&format!("{} {{ display: none !important; }}\n", c.selector));
-            }
-        }
-        css
-    }
     pub fn cosmetic_css(&self, url: &str) -> String {
         let host = url::Url::parse(url)
             .ok()
@@ -183,8 +174,128 @@ impl FilterBlocker {
         }
         css
     }
+
+    /// All cosmetic rules as JSON (domains + selector) so injected JS can apply
+    /// them at runtime based on the actual page hostname.
+    pub fn cosmetic_rules_json(&self) -> String {
+        let rules: Vec<serde_json::Value> = self
+            .cosmetic
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "domains": c.domains,
+                    "selector": c.selector,
+                })
+            })
+            .collect();
+        serde_json::to_string(&rules).unwrap_or_else(|_| "[]".into())
+    }
+
+    pub fn user_rules(&self) -> Vec<String> {
+        self.rules
+            .iter()
+            .map(|r| match r {
+                Rule::Domain { host, .. } => format!("||{host}^"),
+                Rule::Path { needle, .. } => needle.clone(),
+            })
+            .collect()
+    }
+
+    /// Mark-as-ad cosmetic rules as human-readable lines: `domain##selector`
+    /// or `##selector` (global).
+    pub fn marked_ads(&self) -> Vec<String> {
+        self.cosmetic
+            .iter()
+            .map(|c| match &c.domains {
+                Some(d) => format!("{}##{}", d.join(","), c.selector),
+                None => format!("##{}", c.selector),
+            })
+            .collect()
+    }
 }
 
 pub fn load_default_filters() -> &'static FilterBlocker {
     FILTERS.get_or_init(|| FilterBlocker::parse(include_str!("../assets/filters.txt")))
+}
+
+/// Load the user-added filter file (e.g. "Mark as ad" rules) from disk.
+/// Call once at startup with the app config directory.
+pub fn load_user_filters(dir: &std::path::Path) {
+    {
+        let mut guard = USER_FILTERS
+            .get_or_init(|| Mutex::new(FilterBlocker::default()))
+            .lock()
+            .unwrap();
+        let p = dir.join("user-filters.txt");
+        if let Ok(data) = std::fs::read_to_string(&p) {
+            *guard = FilterBlocker::parse(&data);
+        }
+    }
+}
+
+/// Persist a user-added cosmetic rule (Mark as ad) to the user filter store.
+pub fn set_user_filter(dir: Option<&Path>, domain: Option<&str>, selector: &str) {
+    let rule = match domain {
+        Some(d) if !d.is_empty() => format!("{}##{}", d.trim_start_matches("www."), selector),
+        _ => format!("##{}", selector),
+    };
+    {
+        let mut uf = USER_FILTERS.get_or_init(|| Mutex::new(FilterBlocker::default())).lock().unwrap();
+        let mut input = uf.user_rules();
+        input.extend(uf.marked_ads());
+        input.push(rule);
+        *uf = FilterBlocker::parse(&input.join("\n"));
+    }
+    if let Some(dir) = dir {
+        if let Some(uf) = USER_FILTERS.get() {
+            if let Ok(uf) = uf.lock() {
+                let mut lines = uf.user_rules();
+                lines.extend(uf.marked_ads());
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("user-filters.txt"), lines.join("\n"));
+            }
+        }
+    }
+}
+
+/// Remove a user-added rule by index (0-based, in file order).
+pub fn remove_user_filter(dir: Option<&Path>, index: usize) {
+    let mut uf = USER_FILTERS.get_or_init(|| Mutex::new(FilterBlocker::default())).lock().unwrap();
+    let mut rules = uf.user_rules();
+    if index < rules.len() {
+        rules.remove(index);
+        *uf = FilterBlocker::parse(&rules.join("\n"));
+    }
+    drop(uf);
+    if let Some(dir) = dir {
+        if let Some(uf) = USER_FILTERS.get() {
+            if let Ok(uf) = uf.lock() {
+                let mut lines = uf.user_rules();
+                lines.extend(uf.marked_ads());
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join("user-filters.txt"), lines.join("\n"));
+            }
+        }
+    }
+}
+
+pub fn user_filter_rules() -> Vec<String> {
+    USER_FILTERS
+        .get_or_init(|| Mutex::new(FilterBlocker::default()))
+        .lock()
+        .unwrap()
+        .marked_ads()
+}
+
+/// Combined cosmetic rules (default + user), as JSON for runtime injection.
+pub fn all_cosmetic_rules_json() -> String {
+    let base: Vec<serde_json::Value> =
+        serde_json::from_str(&load_default_filters().cosmetic_rules_json()).unwrap_or_default();
+    let user = USER_FILTERS
+        .get_or_init(|| Mutex::new(FilterBlocker::default()))
+        .lock()
+        .unwrap();
+    let user: Vec<serde_json::Value> = serde_json::from_str(&user.cosmetic_rules_json()).unwrap_or_default();
+    let all: Vec<serde_json::Value> = base.into_iter().chain(user).collect();
+    serde_json::to_string(&all).unwrap_or_else(|_| "[]".into())
 }

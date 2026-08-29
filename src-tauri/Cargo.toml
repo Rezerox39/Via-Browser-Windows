@@ -1,0 +1,29 @@
+[package]
+name = "via-browser-win"
+version = "7.2.1"
+description = "Lightweight Tauri desktop browser inspired by Via Browser"
+edition = "2021"
+
+[lib]
+name = "via_browser_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+dirs = "5"
+regex = "1"
+unicode-normalization = "0.1"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

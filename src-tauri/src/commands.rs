@@ -386,6 +386,26 @@ pub fn clear_data(app: tauri::AppHandle, state: tauri::State<'_, BrowserState>) 
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_night_mode(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+    enabled: bool,
+) -> Result<(), String> {
+    let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
+    let js = if enabled {
+        r#"var s=document.createElement('style');s.id='via-night';s.textContent='html{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9)}img,video,canvas,iframe,svg,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}';document.documentElement.appendChild(s);"#
+    } else {
+        r#"var s=document.getElementById('via-night');if(s)s.remove();"#
+    };
+    for l in labels {
+        if let Some(wv) = app.get_webview(&l) {
+            let _ = wv.eval(js.to_string());
+        }
+    }
+    Ok(())
+}
+
 pub fn normalize_url(input: &str) -> String {
     let t = input.trim();
     if t.is_empty() {

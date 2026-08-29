@@ -27,15 +27,21 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
 
 ## Features
 
-- **Tabs** — real parallel tabs (each is a native WebView2 child webview); `Ctrl+T`, `Ctrl+W`.
-- **Omnibox** — address bar with live search suggestions (Google/Bing/DuckDuckGo/Baidu).
-- **Search engine selector** in the toolbar; choose your default.
-- **Ad & tracker blocker** — block by domain at request time (fetch/XHR) plus cosmetic
-  content hiding, using Via's built-in filter list.  Toggle from the status bar.
-- **User-Agent switcher** — Desktop / Mobile / Via Android / Custom.
-- **User scripts & styles** — drop in per-site CSS and JS (settings panel, `Ctrl+P`).
+- **Via-style mobile UI on PC** — no top chrome. A 5-icon bottom navigation bar
+  (Back / Forward / Home / Tabs / Menu), a centered speed-dial homepage, a
+  full-width floating address bar, a card-grid tab switcher, and a slide-up
+  grid menu. Just like the Android app, adapted for mouse & keyboard.
+- **Tabs** — real parallel tabs (each is a native WebView2 child webview);
+  visual card grid switcher. `Ctrl+T`, `Ctrl+W`, `Ctrl+L`.
+- **Omnibox** — floating address/search bar with live suggestions
+  (Google / Bing / DuckDuckGo / Baidu).
+- **Ad & tracker blocker** — Url-block at request time (fetch/XHR) plus
+  cosmetic content hiding using Via's bundled EasyList-derived filter list
+  (extracted from `simple.txt` in the Android APK).
+- **User scripts & styles** — inject custom CSS and JS per page.
+- **Night mode** — full-window color inversion like Via on Android.
+- **Desktop / Mobile toggle** — instant User-Agent switch + reload.
 - **Privacy** — clear cache & history now, or automatically on exit.
-- **Customizable homepage** and a distraction-free dark/light UI.
 
 ## Install & run on Windows
 

@@ -33,6 +33,7 @@ pub fn run() {
             commands::get_filters_css,
             commands::blocked_total,
             commands::clear_data,
+            commands::set_night_mode,
             commands::search_suggest,
         ])
         .run(tauri::generate_context!())

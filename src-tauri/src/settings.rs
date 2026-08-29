@@ -13,6 +13,8 @@ pub struct Settings {
     pub clear_on_exit: bool,
     pub user_css: String,
     pub user_js: String,
+    pub night_mode: bool,
+    pub desktop_mode: bool,
 }
 
 impl Default for Settings {
@@ -26,6 +28,8 @@ impl Default for Settings {
             clear_on_exit: false,
             user_css: String::new(),
             user_js: String::new(),
+            night_mode: false,
+            desktop_mode: true,
         }
     }
 }
@@ -35,7 +39,7 @@ pub fn resolve_ua(settings: &Settings) -> Option<String> {
         "Mobile" => Some(
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36".into(),
         ),
-        "Via Android" => Some(
+        "Via" => Some(
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36 Via/7.2.1".into(),
         ),
         "Custom" => {

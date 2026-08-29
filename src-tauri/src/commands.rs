@@ -32,18 +32,34 @@ pub struct BrowserState {
 
 pub struct SettingsState(pub Mutex<Settings>);
 
-const CHROME_HEIGHT: f64 = 36.0;
+/// Height of the HTML bottom navigation bar — must match CSS `--nav-h`.
+/// The native webview is positioned at the very top (y=0) with a height that
+/// never includes the bottom bar area, so the nav bar always stays visible.
+pub const NAV_HEIGHT: f64 = 56.0;
 
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
 
-fn tab_size(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
+fn tab_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
     let wvwin = app.get_webview_window("main").unwrap();
     let size = wvwin.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(1280, 800));
     let width = size.width.max(640) as f64;
-    let height = (size.height.saturating_sub(38) as f64).max(320.0);
-    (LogicalPosition::new(0.0, CHROME_HEIGHT), LogicalSize::new(width, height))
+    let height = (size.height.saturating_sub(NAV_HEIGHT as u32) as f64).max(320.0);
+    // y=0: the webview fills from the very top down to the bottom nav bar.
+    (LogicalPosition::new(0.0, 0.0), LogicalSize::new(width, height))
+}
+
+/// Reposition/resize every tab webview after the window is resized.
+pub fn relayout_tabs(app: &tauri::AppHandle) {
+    let state = app.state::<BrowserState>();
+    let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
+    let (_, size) = tab_bounds(app);
+    for l in labels {
+        if let Some(wv) = app.get_webview(&l) {
+            let _ = wv.set_size(size);
+        }
+    }
 }
 
 
@@ -201,7 +217,7 @@ pub async fn create_tab(
     let label = format!("tab-{id}");
     let target = url.unwrap_or(s.homepage.clone());
     let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
-    let (pos, size) = tab_size(&app);
+    let (pos, size) = tab_bounds(&app);
 
     let mut builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(parsed.clone()))
         .initialization_script(init::build(&s))
@@ -329,6 +345,24 @@ pub fn select_tab(
         }
     }
     Err("tab not found".into())
+}
+
+#[tauri::command]
+pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
+    let label = format!("tab-{id}");
+    if let Some(wv) = app.get_webview(&label) {
+        let _ = wv.hide();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
+    let label = format!("tab-{id}");
+    if let Some(wv) = app.get_webview(&label) {
+        let _ = wv.show();
+    }
+    Ok(())
 }
 
 #[tauri::command]

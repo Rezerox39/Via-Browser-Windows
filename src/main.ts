@@ -85,10 +85,22 @@ QUICS.forEach(s => {
 function showToast(msg: string) { toastEl.textContent = msg; toastEl.classList.add("show"); setTimeout(() => toastEl.classList.remove("show"), 2200); }
 function setHome(on: boolean) { homeEl.classList.toggle("show", on); if (on) stage.style.display = "none"; else stage.style.display = ""; }
 
-function openAddr() { overlay = "addr"; addr.classList.add("open"); setTimeout(() => { ainput.focus(); ainput.select(); }, 30); }
+// Native webviews ignore CSS z-index and render ON TOP of the HTML UI.
+// So whenever an overlay opens we must hide the active webview in the backend,
+// and show it again (with correct bounds) when the overlay closes.
+async function hideActiveWebview() { if (activeId != null) await invoke("hide_tab", { id: activeId }).catch(()=>{}); }
+async function showActiveWebview() { if (activeId != null) { await invoke("show_tab", { id: activeId }).catch(()=>{}); } }
+
+function openAddr() {
+  overlay = "addr"; addr.classList.add("open");
+  hideActiveWebview(); // hide native webview so the address overlay shows
+  setTimeout(() => { ainput.focus(); ainput.select(); }, 30);
+}
 function closeOverlay() {
+  const wasOpen = overlay !== "none";
   addr.classList.remove("open"); tabsEl.classList.remove("show"); menuEl.classList.remove("show");
   overlay = "none"; ainput.value = ""; sug.classList.remove("open");
+  if (wasOpen) showActiveWebview(); // bring the native webview back
 }
 
 function searchUrl(engine: string, q2: string) { return (ENGINES[engine]||ENGINES.Bing) + encodeURIComponent(q2); }
@@ -191,10 +203,10 @@ menuEl.onclick = (e: any) => { if (e.target === menuEl) closeOverlay(); };
 nb.onclick = goBack;
 nf.onclick = goFwd;
 nh.onclick = async () => { setHome(true); };
-nt.onclick = () => { if (overlay === "tabs") closeOverlay(); else { renderTabGrid(); overlay = "tabs"; tabsEl.classList.add("show"); } };
-nm.onclick = () => { if (overlay === "menu") closeOverlay(); else { syncMenuUI(); overlay = "menu"; menuEl.classList.add("show"); } };
+nt.onclick = () => { if (overlay === "tabs") closeOverlay(); else { renderTabGrid(); overlay = "tabs"; tabsEl.classList.add("show"); hideActiveWebview(); } };
+nm.onclick = () => { if (overlay === "menu") closeOverlay(); else { syncMenuUI(); overlay = "menu"; menuEl.classList.add("show"); hideActiveWebview(); } };
 tabX.onclick = closeOverlay;
-tabNew.onclick = async () => { closeOverlay(); await createTab(undefined, true); setHome(true); };
+tabNew.onclick = async () => { closeOverlay(); await createTab(undefined, true); setHome(true); showActiveWebview(); };
 
 /* ---- Menu handlers ---- */
 q("m-night")!.onclick = async () => { nightMode = !nightMode; try { await invoke("set_settings", { settings: {...getDefault(), night_mode: nightMode } }); } catch {}; await invoke("set_night_mode", { enabled: nightMode }).catch(()=>{}); syncMenuUI(); showToast(nightMode ? "Night mode ON" : "Night mode OFF"); closeOverlay(); };

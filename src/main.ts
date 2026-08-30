@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 
 /* ---- Types ---- */
 type Tab = { id: number; url: string; title: string; loading: boolean; active: boolean };
@@ -16,17 +17,12 @@ type SiteConfig = { host: string; ua_mode: string; adblock_enabled: boolean };
 type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
+type ActiveDl = { url: string; path: string; received: number; done: boolean; success?: boolean };
 
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=", Bing: "https://www.bing.com/search?q=",
   DuckDuckGo: "https://duckduckgo.com/?q=", Baidu: "https://www.baidu.com/s?wd=",
 };
-const QUICS = [
-  { n: "Google", u: "https://www.google.com", i: "G" }, { n: "YouTube", u: "https://www.youtube.com", i: "▶" },
-  { n: "X", u: "https://x.com", i: "𝕏" }, { n: "Reddit", u: "https://www.reddit.com", i: "R" },
-  { n: "Wiki", u: "https://en.wikipedia.org", i: "W" }, { n: "GitHub", u: "https://github.com", i: "⌥" },
-  { n: "DDG", u: "https://duckduckgo.com", i: "D" }, { n: "Bing", u: "https://www.bing.com", i: "B" },
-];
 
 /* ---- State ---- */
 let tabs: Tab[] = [];
@@ -44,6 +40,7 @@ let sites: SiteConfig[] = [];      // cached site configs
 let bookmarks: Bookmark[] = [];
 let historyItems: HistItem[] = [];
 let downloads: DlItem[] = [];
+let activeDl: ActiveDl[] = [];
 let snifferItems: string[] = [];   // media URLs captured from active page
 let markAdActive = false;          // "Mark as ad" picker mode toggle
 
@@ -53,9 +50,8 @@ const q = (id: string) => document.getElementById(id) as any;
 q("app").innerHTML = `
 <div id="stage"></div>
 <div id="home" class="show">
-  <div class="logo">Via<span class="sub">Browser</span></div>
+  <img class="logo" src="/via-logo.svg" alt="Via Browser" draggable="false" />
   <div class="pill" id="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span id="pill-text">Search</span></div>
-  <div class="grid" id="quick-grid"></div>
 </div>
 <div id="addr">
   <div class="row">
@@ -89,20 +85,12 @@ q("app").innerHTML = `
 <div id="toast"></div>`;
 
 /* ---- Refs ---- */
-const stage = q("stage"), homeEl = q("home"), pill = q("pill"), quickGrid = q("quick-grid");
+const stage = q("stage"), homeEl = q("home"), pill = q("pill");
 const addr = q("addr"), acancel = q("acancel"), ainput = q("ainput"), sug = q("sug");
 const tabsEl = q("tabs"), tabX = q("tab-x"), tabGrid = q("tab-grid"), tabNew = q("tab-new");
 const menuEl = q("menu"), menuGrid = q("menu-grid");
 const nb = q("nb"), nf = q("nf"), nh = q("nh"), nt = q("nt"), nm = q("nm");
 const badge = q("badge"), toastEl = q("toast");
-
-/* ---- Quick sites ---- */
-QUICS.forEach(s => {
-  const d = document.createElement("div"); d.className = "tile";
-  d.innerHTML = `<div class="ic">${s.i}</div><span>${s.n}</span>`;
-  d.onclick = () => navigate(s.u);
-  quickGrid.appendChild(d);
-});
 
 /* ---- Helpers ---- */
 function showToast(msg: string) { toastEl.textContent = msg; toastEl.classList.add("show"); setTimeout(() => toastEl.classList.remove("show"), 2200); }
@@ -383,14 +371,11 @@ function viewSource() {
   });
 }
 function toggleFullscreen() {
-  const w = window as any;
-  const fs = w.__TAURI__?.window?.getCurrentWindow?.();
-  if (fs) {
-    fs.setFullscreen(!isFullscreen).then(() => { isFullscreen = !isFullscreen; syncMenuUI(); }).catch(()=>{});
-  } else {
+  const fs = getCurrentWindow();
+  fs.setFullscreen(!isFullscreen).then(() => {
     isFullscreen = !isFullscreen; syncMenuUI();
     showToast(isFullscreen ? "Full-screen on" : "Full-screen off");
-  }
+  }).catch(() => showToast("Fullscreen unavailable"));
 }
 function toggleShowImages() {
   showImages = !showImages;
@@ -671,8 +656,16 @@ async function openPanel(kind: string, arg?: string) {
   } else if (kind === "downloads") {
     title = "Downloads";
     downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
-    const items = downloads.map(d => `<div class="prow"><span class="ptitle">${esc(d.title)}</span><small>${esc(d.path)}</small></div>`).join("") || "<div class='empty'>No saved pages / downloads</div>";
-    content = `<div class="plist">${items}</div>`;
+    const active = activeDl.slice().reverse().map(d => {
+      const pct = d.done ? 100 : Math.min(99, Math.round((d.received / 1) * 100));
+      const p = d.done
+        ? `<span class="pin">✓</span>`
+        : `<span class="pbar"><i style="width:${pct}%"></i></span>`;
+      return `<div class="prow" data-dl="${esc(d.path)}"><span class="ptitle">${esc(d.path.split(/[\\/]/).pop() || d.url)}</span><small>${esc(d.url)}</small>${p}</div>`;
+    }).join("");
+    const saved = downloads.map(d => `<div class="prow" data-dl="${esc(d.path)}"><span class="ptitle">${esc(d.title)}</span><small>${esc(d.path)}</small><span class="pin">✓</span></div>`).join("");
+    content = `<div class="plist">${active ? active : ""}${saved || "<div class='empty'>No saved pages yet</div>"}</div>
+      <div class="empty">WebView2 downloads are saved to your OS Downloads folder.</div>`;
   } else if (kind === "settings") {
     title = "Settings";
     content = `
@@ -772,6 +765,12 @@ async function openPanel(kind: string, arg?: string) {
   if (kind === "sniff") {
     const lc = p.querySelector("#log-clear") as HTMLElement; if (lc) lc.onclick = async () => { await invoke("network_log", { rows: [], clear: true }); closePanel(); openPanel("sniff"); };
   }
+  if (kind === "downloads") {
+    (p.querySelectorAll<HTMLElement>("[data-dl]")).forEach(row => row.onclick = () => {
+      const path = row.dataset.dl!;
+      invoke("open_download", { path }).catch(() => showToast("File not found"));
+    });
+  }
   if (kind === "scripts") {
     qs("#sc-new").onclick = () => {
       const sc: UserScript = { id: "sc" + Date.now(), name: "New script", match_urls: "", code: "", enabled: true };
@@ -851,10 +850,10 @@ async function openPanel(kind: string, arg?: string) {
     navigator.clipboard?.writeText(arg || "").catch(()=>{});
   }
   if (kind === "orient") {
-    const fs = (window as any).__TAURI__?.window?.getCurrentWindow?.();
-    qs("#or-port").onclick = () => { if (fs) fs.setSize({ width: 450, height: 900 }); closePanel(); };
-    qs("#or-land").onclick = () => { if (fs) fs.setSize({ width: 1000, height: 600 }); closePanel(); };
-    qs("#or-def").onclick = () => { if (fs) fs.setSize({ width: 1280, height: 800 }); closePanel(); };
+    const fs = getCurrentWindow();
+    qs("#or-port").onclick = () => { fs.setSize(new LogicalSize(450, 900)); closePanel(); };
+    qs("#or-land").onclick = () => { fs.setSize(new LogicalSize(1000, 600)); closePanel(); };
+    qs("#or-def").onclick = () => { fs.setSize(new LogicalSize(1280, 800)); closePanel(); };
   }
   if (kind === "ai") {
     (p.querySelectorAll<HTMLElement>("[data-ai]")).forEach(row => row.onclick = () => { closePanel(); createTab(row.dataset.ai!); });
@@ -893,6 +892,29 @@ listen<{ id: number; url: string }>("tab-url", ev => {
   }
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
+
+// Native WebView2 download events (Requested/Finished) from Rust.
+listen<{ id: number | null; url: string; path: string; done: boolean; success?: boolean }>("download-progress", ev => {
+  const d = ev.payload;
+  const existing = activeDl.find(x => x.url === d.url);
+  if (existing) {
+    existing.done = d.done || existing.done;
+    existing.success = d.success;
+  } else {
+    activeDl.push({ url: d.url, path: d.path, received: 0, done: !!d.done, success: d.success });
+  }
+  if (d.done) showToast(d.success === false ? "Download failed" : "Download complete");
+});
+
+// Poll disk size for active downloads so the panel shows real byte progress
+// (WebView2 writes to the destination path while downloading).
+setInterval(async () => {
+  if (!activeDl.length || overlay !== "panel") return;
+  for (const dl of activeDl) {
+    if (dl.done) continue;
+    if (dl.path) dl.received = await invoke<number>("file_size", { path: dl.path }).catch(() => dl.received);
+  }
+}, 800);
 
 // Secure page->host bridge messages (VIA: prefix, forwarded by Rust).
 listen<{ id: number; msg: string }>("via-msg", async ev => {

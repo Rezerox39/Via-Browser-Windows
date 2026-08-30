@@ -29,8 +29,14 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
-                    if let WindowEvent::Resized(_) = event {
-                        commands::relayout_tabs(&handle);
+                    // Resize + HiDPI scale changes + fullscreen toggles all
+                    // require re-calculating the child webview bounds. The
+                    // handler is safe no-ops when the window is transitioning.
+                    match event {
+                        WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                            commands::relayout_tabs(&handle);
+                        }
+                        _ => {}
                     }
                 });
             }
@@ -83,6 +89,8 @@ pub fn run() {
             features::list_marked_ads,
             features::all_cosmetic_rules,
             features::open_external,
+            features::file_size,
+            features::open_download,
             reader::reader_bundle,
             reader::reader_close,
         ])

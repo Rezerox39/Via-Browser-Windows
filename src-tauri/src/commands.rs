@@ -1,7 +1,9 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder};
+use tauri::{
+    webview::DownloadEvent, Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder,
+};
 
 use crate::adblock;
 use crate::init;
@@ -41,22 +43,36 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
 
-fn tab_bounds(app: &tauri::AppHandle) -> (LogicalPosition<f64>, LogicalSize<f64>) {
-    let wvwin = app.get_webview_window("main").unwrap();
-    let size = wvwin.inner_size().ok().unwrap_or(tauri::PhysicalSize::new(1280, 800));
-    let width = size.width.max(640) as f64;
-    let height = (size.height.saturating_sub(NAV_HEIGHT as u32) as f64).max(320.0);
-    // y=0: the webview fills from the very top down to the bottom nav bar.
-    (LogicalPosition::new(0.0, 0.0), LogicalSize::new(width, height))
+fn tab_bounds(app: &tauri::AppHandle) -> Option<(LogicalPosition<f64>, LogicalSize<f64>)> {
+    // Never panic: a transiently-unavailable window (e.g. during fullscreen
+    // transition or teardown) should just yield None so resize is skipped.
+    let wvwin = app.get_webview_window("main")?;
+    let size = wvwin.inner_size().ok()?;
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    let fullscreen = wvwin.is_fullscreen().unwrap_or(false);
+    let width = size.width as f64;
+    // In fullscreen the OS bottom nav bar is hidden, so the webview may fill
+    // the whole window. Otherwise it must stop above the HTML bottom bar.
+    let height = if fullscreen {
+        size.height as f64
+    } else {
+        (size.height.saturating_sub(NAV_HEIGHT as u32) as f64).max(320.0)
+    };
+    Some((LogicalPosition::new(0.0, 0.0), LogicalSize::new(width, height)))
 }
 
-/// Reposition/resize every tab webview after the window is resized.
+/// Reposition/resize every tab webview after the window is resized or its
+/// scale factor changes (incl. fullscreen toggles). Safely no-ops if the
+/// window or a webview is unavailable.
 pub fn relayout_tabs(app: &tauri::AppHandle) {
     let state = app.state::<BrowserState>();
     let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
-    let (_, size) = tab_bounds(app);
+    let Some((pos, size)) = tab_bounds(app) else { return };
     for l in labels {
         if let Some(wv) = app.get_webview(&l) {
+            let _ = wv.set_position(pos);
             let _ = wv.set_size(size);
         }
     }
@@ -219,11 +235,69 @@ pub async fn create_tab(
     // user types a query/URL — we never auto-navigate to an external site.
     let target = url.unwrap_or_else(|| "about:blank".to_string());
     let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
-    let (pos, size) = tab_bounds(&app);
+    let (pos, size) = tab_bounds(&app).ok_or_else(|| "window unavailable".to_string())?;
 
     let nav_settings = s.clone(); // captured by on_navigation (site overrides)
+    let dl_label = label.clone();
     let mut builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(parsed.clone()))
         .initialization_script(init::build(&s))
+        .on_download(move |wv, event| {
+            let wv_app = wv.app_handle();
+            let win = wv_app.get_webview_window("main");
+            let id = wv_app
+                .state::<BrowserState>()
+                .tabs
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|(i, l)| if *l == dl_label { Some(*i) } else { None });
+            match event {
+                DownloadEvent::Requested { url, destination } => {
+                    let dir = wv_app.path().download_dir();
+                    if let Ok(dir) = dir {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let fname = url
+                            .path_segments()
+                            .and_then(|segs| segs.last())
+                            .filter(|f| !f.is_empty() && f.len() < 128)
+                            .unwrap_or("download");
+                        let dest = dir.join(fname);
+                        // If a file with that name exists, avoid clobbering.
+                        let dest = if dest.exists() {
+                            let stem = dest.file_stem().and_then(|f| f.to_str()).unwrap_or("download");
+                            let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            let mut n = 1;
+                            let mut candidate = dir.join(format!("{stem} ({n}).{ext}"));
+                            while candidate.exists() && n < 1000 {
+                                n += 1;
+                                candidate = dir.join(format!("{stem} ({n}).{ext}"));
+                            }
+                            candidate
+                        } else {
+                            dest
+                        };
+                        *destination = dest.clone();
+                        if let Some(win) = &win {
+                            let _ = win.emit("download-progress", serde_json::json!({
+                                "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
+                            }));
+                        }
+                    }
+                }
+                DownloadEvent::Finished { url, path, success } => {
+                    if let Some(win) = &win {
+                        let _ = win.emit("download-progress", serde_json::json!({
+                            "id": id, "url": url.to_string(),
+                            "path": path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+                            "received": 0, "total": 0, "done": true, "success": success,
+                        }));
+                    }
+                }
+                _ => {}
+            }
+            // Let the download proceed.
+            true
+        })
         .on_page_load(move |wv, payload| {
             let wv_app = wv.app_handle();
             let label = wv.label().to_string();

@@ -27,7 +27,7 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
 
 ## Features
 
-- **Via-style mobile UI on PC** — no top chrome, pure-black local home screen
+- **Via-style mobile UI on PC** — no top chrome, **pure AMOLED-black (#000000)** local home screen with the **official Via ribbon logo** extracted from the APK's assets, and no fake speed-dial tiles.
   (no external site is loaded on launch; the webview stays hidden until you
   search/navigate). A 5-icon bottom navigation bar capped at a phone-like
   500px (Back / Forward / Home / Tabs / Menu), a floating address bar, a
@@ -61,6 +61,9 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
   code) stored in settings; Via's GM API spec is the reference.
 - **Night mode** — full-window color inversion like Via on Android.
 - **Desktop / Mobile / Via UA** — quick User-Agent switch + reload.
+- **Downloads** — WebView2 downloads are intercepted in Rust, saved to the OS
+  Downloads folder (with auto-collision handling), and surfaced in a Downloads
+  panel with live byte progress and open file. Saved pages land here too.
 - **Privacy** — clear cache & history, Incognito (no history + auto-clear on
   exit), and a cookie inspector.
 - **Persistence** — bookmarks, history, downloads/saved pages, scripts,

@@ -77,6 +77,7 @@ pub fn run() {
             features::clear_history,
             features::list_downloads,
             features::save_page,
+            features::download_from_js,
             features::get_cookies,
             features::clear_cookies,
             features::list_scripts,

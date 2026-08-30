@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::process::Command;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::adblock;
 use crate::settings::{SiteConfig, UserScript};
@@ -165,6 +166,104 @@ pub fn save_page(app: tauri::AppHandle, state: tauri::State<'_, StoreState>, url
         persist(&app, &s);
     }
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Download a URL straight to the OS Downloads folder. Used by the in-page
+/// download-link capture (HTML5 `download` attrs, blob/data URLs, file links)
+/// as a reliable fallback when WebView2's native DownloadStarting doesn't fire.
+#[tauri::command]
+pub fn download_from_js(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, StoreState>,
+    url: String,
+    filename: Option<String>,
+) -> Result<String, String> {
+    let download_dir = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&download_dir);
+
+    let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
+    let fname = filename
+        .filter(|f| !f.trim().is_empty() && f.len() < 128)
+        .map(|f| sanitize(&f))
+        .filter(|f| !f.is_empty())
+        .or_else(|| {
+            parsed
+                .path_segments()
+                .and_then(|segs| segs.last())
+                .filter(|f| !f.is_empty())
+                .map(|f| sanitize(f))
+                .filter(|f| !f.is_empty())
+        })
+        .unwrap_or_else(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("download-{ts}")
+        });
+
+    let dest = download_dir.join(&fname);
+    let _ = std::fs::remove_file(&dest); // fresh copy; no clobber logic needed for fallback
+
+    let win = app.get_webview_window("main");
+    if let Some(win) = &win {
+        let _ = win.emit("download-started", serde_json::json!({
+            "id": null, "url": url, "path": dest.to_string_lossy(),
+        }));
+    }
+
+    println!("[via] JS download: {url} -> {}", dest.display());
+    let out = Command::new(if cfg!(target_os = "windows") { "curl.exe" } else { "curl" })
+        .arg("-sS")
+        .arg("--max-time")
+        .arg("600")
+        .arg("--fail")
+        .arg("-A")
+        .arg("ViaBrowser/7.2.1")
+        .arg("-L")
+        .arg("-o")
+        .arg(&dest)
+        .arg(&url)
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&dest);
+        if let Some(win) = &win {
+            let _ = win.emit("download-progress", serde_json::json!({
+                "id": null, "url": url, "path": dest.to_string_lossy(),
+                "received": 0, "total": 0, "done": true, "success": false,
+            }));
+        }
+        return Err(format!(
+            "download failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+
+    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
+    {
+        let mut s = state.0.lock().unwrap();
+        s.downloads.push(Download {
+            url: url.clone(),
+            path: dest.to_string_lossy().into_owned(),
+            title: fname.clone(),
+            size,
+            done: true,
+        });
+        persist(&app, &s);
+    }
+    if let Some(win) = &win {
+        let _ = win.emit("download-progress", serde_json::json!({
+            "id": null, "url": url, "path": dest.to_string_lossy(),
+            "received": size, "total": size, "done": true, "success": true,
+        }));
+    }
+    Ok(dest.to_string_lossy().into_owned())
 }
 
 fn sanitize(s: &str) -> String {

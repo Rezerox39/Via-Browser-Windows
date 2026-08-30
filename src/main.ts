@@ -1297,7 +1297,15 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
   let arr: any[] = [];
   try { arr = JSON.parse(ev.payload.msg); } catch { return; }
   const [action, data] = arr;
-  if (action === "dlTotal" && data?.url && data?.len > 0) {
+  if (action === "download" && data?.url) {
+    showToast("Downloading…");
+    invoke<string>("download_from_js", { url: data.url, filename: data?.filename || null })
+      .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
+      .catch((err: any) => {
+        console.error("[via] download failed:", err);
+        showToast("Download failed");
+      });
+  } else if (action === "dlTotal" && data?.url && data?.len > 0) {
     const dl = activeDl.find(x => x.url === data.url);
     if (dl) { dl.total = data.len; if (overlay === "panel") refreshDownloadRows(); }
   } else if (action === "markAd" && data?.selector) {

@@ -274,7 +274,15 @@ function buildMenuUI() {
     if (hidden.includes(m.id)) return;
     const d = document.createElement("div"); d.className = "item"; d.id = m.id;
     d.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${m.svg}</svg><span>${m.label}</span>`;
-    d.onclick = () => (MENU_ACTIONS[m.id] || (() => showToast(m.label + ": coming soon")))();
+    d.onclick = () => {
+      try {
+        (MENU_ACTIONS[m.id] || (() => showToast(m.label + ": coming soon")))();
+      } catch (err) {
+        console.error("[via] menu action failed:", m.id, err);
+        showToast("Error loading panel");
+        try { closePanel(); } catch {}
+      }
+    };
     menuGrid.appendChild(d);
   });
   syncMenuUI();
@@ -808,10 +816,13 @@ function panelHTML(title: string, body: string, page = false): string {
   const ph = page
     ? `<div class="ph"><button class="close" id="p-close" title="Back">‹</button><b>${title}</b><span style="width:34px"></span></div>`
     : `<div class="ph"><span class="grip"></span><b>${title}</b><button class="close" id="p-close">✕</button></div>`;
-  return `<div id="panel" class="${page ? "pg" : ""}"><div class="pc">
+  // NOTE: returns only the panel-shell (.ph/.pb), NOT a #panel wrapper.
+  // openPanel() creates the outer <div id="panel"> ("body") and copies this
+  // shell into it, so the document never has duplicate #panel ids.
+  return `<div class="${page ? "pg " : ""}pc">
     ${ph}
     <div class="pb">${body}</div>
-  </div></div>`;
+  </div>`;
 }
 function closePanel() {
   const p = q("panel"); if (p) p.remove();
@@ -824,6 +835,7 @@ async function openPanel(kind: string, arg?: string) {
   await hideActiveWebview();
   const body = document.createElement("div"); body.id = "panel";
   const page = ["bookmarks", "history", "downloads", "settings"].includes(kind);
+  if (page) body.className = "pg";
   const p = document.createElement("div"); p.className = "pc";
   let title = ""; let content = "";
   const close = () => closePanel();
@@ -964,8 +976,13 @@ async function openPanel(kind: string, arg?: string) {
   }
 
   p.innerHTML = panelHTML(title, content, page);
+  p.className = page ? "pc pg" : "pc";
   body.appendChild(p);
-  const pc = p.querySelector(".pc") as HTMLElement;
+  // Attach the panel to the document BEFORE binding handlers: document-scoped
+  // queries (qs) below must be able to find the injected elements, otherwise
+  // every panel crashes with a silent null reference.
+  document.body.appendChild(body);
+  const pc = p as HTMLElement;
   const pbx = p.querySelector(".pb") as HTMLElement;
   qs("#p-close").onclick = () => {
     if (page) { pc.classList.add("out"); setTimeout(close, 180); } else close();
@@ -1151,7 +1168,6 @@ async function openPanel(kind: string, arg?: string) {
     };
   }
 
-  document.body.appendChild(body);
 }
 
 /* ---- Keyboard ---- */

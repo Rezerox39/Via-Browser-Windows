@@ -17,7 +17,7 @@ type SiteConfig = { host: string; ua_mode: string; adblock_enabled: boolean };
 type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
-type ActiveDl = { url: string; path: string; received: number; done: boolean; success?: boolean };
+type ActiveDl = { url: string; path: string; received: number; total: number; done: boolean; success?: boolean };
 
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=", Bing: "https://www.bing.com/search?q=",
@@ -32,8 +32,10 @@ let desktopMode = true;
 let searchEngine = "Google";
 let hasNavigated = false;          // true once the user navigates off the homepage
 let overlay: "none" | "addr" | "tabs" | "menu" | "panel" = "none";
+let panelKind: string | null = null;
 let textSize = 1.0, showImages = true, networkLog = false, gameMode = false, readAloud = false;
 let adblockOn = true, incognitoMode = false, isFullscreen = false;
+let restoreTabs = false;
 let userCss = "";                   // custom CSS applied to every page
 let scripts: UserScript[] = [];    // cached script store
 let sites: SiteConfig[] = [];      // cached site configs
@@ -51,7 +53,7 @@ q("app").innerHTML = `
 <div id="stage"></div>
 <div id="home" class="show">
   <img class="logo" src="/via-logo.svg" alt="Via Browser" draggable="false" />
-  <div class="pill" id="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span id="pill-text">Search</span></div>
+  <div class="pill" id="pill"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="pill-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" /></div>
 </div>
 <div id="addr">
   <div class="row">
@@ -85,7 +87,7 @@ q("app").innerHTML = `
 <div id="toast"></div>`;
 
 /* ---- Refs ---- */
-const stage = q("stage"), homeEl = q("home"), pill = q("pill");
+const stage = q("stage"), homeEl = q("home"), pill = q("pill"), pillInput = q("pill-input");
 const addr = q("addr"), acancel = q("acancel"), ainput = q("ainput"), sug = q("sug");
 const tabsEl = q("tabs"), tabX = q("tab-x"), tabGrid = q("tab-grid"), tabNew = q("tab-new");
 const menuEl = q("menu"), menuGrid = q("menu-grid");
@@ -107,6 +109,26 @@ function evalInActive(js: string) { if (activeId != null) return invoke("eval_ta
 function locationIt() { const t = tabs.find(x => x.id === activeId); return t && t.url && !t.url.startsWith("about:") ? t.url : "https://www.bing.com"; }
 
 /* ---- Overlays ---- */
+let pillSugT: any;
+async function pillSuggest() {
+  const q2 = pillInput.value.trim(); if (!q2) { return; }
+  try {
+    const items: any[] = await invoke("search_suggest", { query: q2, engine: searchEngine });
+    // Show suggestions inside the address overlay for the homepage input too.
+    if (items.length) {
+      sug.innerHTML = "";
+      items.slice(0, 6).forEach(it => { const d = document.createElement("div"); d.className = "item"; d.textContent = it.label; d.onclick = () => { pillInput.value = it.label; pillSuggest(); }; sug.appendChild(d); });
+      // position suggestion dropdown under the homepage pill
+      const r = (pillInput.parentElement as HTMLElement).getBoundingClientRect();
+      (sug as HTMLElement).style.position = "fixed";
+      (sug as HTMLElement).style.top = (r.bottom + 8) + "px";
+      (sug as HTMLElement).style.left = "50%";
+      (sug as HTMLElement).style.transform = "translateX(-50%)";
+      (sug as HTMLElement).style.maxWidth = "min(420px, 80%)";
+      sug.classList.add("open");
+    } else { sug.classList.remove("open"); }
+  } catch { sug.classList.remove("open"); }
+}
 function openAddr() {
   overlay = "addr"; addr.classList.add("open");
   hideActiveWebview(); // hide native webview so the address overlay is visible
@@ -115,6 +137,7 @@ function openAddr() {
 function closeOverlay() {
   const wasOpen = overlay !== "none";
   addr.classList.remove("open"); tabsEl.classList.remove("show"); menuEl.classList.remove("show");
+  sug.classList.remove("open");
   overlay = "none"; ainput.value = ""; sug.classList.remove("open");
   if (wasOpen && hasNavigated) showActiveWebview(); // restore webview if we navigated away from home
 }
@@ -170,6 +193,7 @@ async function selectTab(id: number) {
 }
 async function navigate(url: string) {
   hasNavigated = true;
+  sug.classList.remove("open"); pillInput.value = "";
   setHome(false); // hide homepage, show stage
   if (activeId != null) await invoke("navigate_tab", { id: activeId, url });
   await showActiveWebview();
@@ -274,7 +298,20 @@ async function openTabs() {
 }
 
 /* ---- Bindings ---- */
-pill.onclick = openAddr;
+pill.onclick = () => { pillInput.focus(); };
+pillInput.onkeydown = (e: KeyboardEvent) => {
+  if (e.key === "Enter") {
+    const v = pillInput.value;
+    if (v.trim()) {
+      pillInput.blur();
+      invoke<string>("parse_and_load_url", { input: v })
+        .then(url => navigate(url))
+        .catch(() => navigate(searchUrl(searchEngine, v.trim())));
+      pillInput.value = "";
+    }
+  }
+};
+pillInput.oninput = () => { clearTimeout(pillSugT); pillSugT = setTimeout(pillSuggest, 200); };
 acancel.onclick = closeOverlay;
 ainput.onkeydown = (e: KeyboardEvent) => { if (e.key === "Enter") goAddr(); if (e.key === "Escape") closeOverlay(); };
 ainput.oninput = () => { clearTimeout(sugT); sugT = setTimeout(doSuggest, 200); };
@@ -609,7 +646,7 @@ const MENU_ACTIONS: Record<string, () => void> = {
 function getDefault(): Settings {
   return {
     homepage: "about:blank", search_engine: searchEngine, ua_mode: desktopMode ? "Desktop" : "Mobile",
-    custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_js: "",
+    custom_ua: "", adblock_enabled: adblockOn, clear_on_exit: incognitoMode, user_js: "",
     night_mode: nightMode, desktop_mode: desktopMode, text_size: textSize, show_images: showImages,
     network_log: networkLog, game_mode: gameMode, read_aloud_enabled: readAloud,
     user_css: userCss, scripts, sites, pages_log: [],
@@ -617,6 +654,56 @@ function getDefault(): Settings {
 }
 function persistSettings(mut?: Partial<Settings>) {
   try { invoke("set_settings", { settings: { ...getDefault(), ...(mut || {}) } }); } catch {}
+}
+
+/* ---- Session restore ("Restore tabs on startup") ---- */
+function saveSession() {
+  try {
+    const urls = tabs.map(t => t.url).filter(u => u && u.startsWith("http"));
+    localStorage.setItem("via.sessionTabs", JSON.stringify(urls));
+  } catch {}
+}
+function sessionUrls(): string[] {
+  try {
+    const urls: string[] = JSON.parse(localStorage.getItem("via.sessionTabs") || "[]");
+    return urls.filter(u => typeof u === "string" && u.startsWith("http"));
+  } catch { return []; }
+}
+
+/* ---- Download helpers ---- */
+function fmtBytes(n: number): string {
+  if (!n || n < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(i === 0 ? 0 : 1) + " " + units[i];
+}
+function dlName(d: { path: string; url: string }): string {
+  const f = d.path.split(/[\\/]/).pop();
+  if (f) return f;
+  try { return decodeURIComponent(new URL(d.url).pathname.split("/").pop() || d.url); } catch { return d.url; }
+}
+function dlRow(d: ActiveDl): string {
+  const name = dlName(d);
+  const done = d.done && d.success !== false;
+  const failed = d.done && d.success === false;
+  const pct = d.total > 0 ? Math.min(100, Math.round((d.received / d.total) * 100)) : 0;
+  const bar = d.total > 0
+    ? `<span class="dbar"><i style="width:${pct}%"></i></span>`
+    : `<span class="dbar indet"><i></i></span>`;
+  const stat = failed ? "Failed" : done ? "Completed" : d.total > 0 ? `${fmtBytes(d.received)} / ${fmtBytes(d.total)}` : `${fmtBytes(d.received)} · downloading`;
+  return `<div class="prow ${failed ? "failed" : done ? "done" : ""}" data-dl="${esc(d.path)}">
+    <span class="ptitle">${esc(name)}</span>
+    <div class="dmeta"><small>${esc(d.url)}</small><span class="dstat">${stat}</span></div>
+    ${bar}
+  </div>`;
+}
+function refreshDownloadRows() {
+  const box = q("dl-active") as HTMLElement | null; if (!box) return;
+  const active = activeDl.slice().reverse().map(dlRow).join("");
+  box.innerHTML = active || "<div class='empty'>No active downloads</div>";
+  (box.querySelectorAll<HTMLElement>("[data-dl]")).forEach(row => row.onclick = () => {
+    const path = row.dataset.dl!; invoke("open_download", { path }).catch(() => showToast("File not found"));
+  });
 }
 
 /* ---- Panels (bookmarks/history/downloads/settings/etc.) ---- */
@@ -629,12 +716,12 @@ function panelHTML(title: string, body: string): string {
 }
 function closePanel() {
   const p = q("panel"); if (p) p.remove();
-  overlay = "none";
+  overlay = "none"; panelKind = null;
   if (hasNavigated) showActiveWebview();
 }
 async function openPanel(kind: string, arg?: string) {
   closePanel();
-  overlay = "panel";
+  overlay = "panel"; panelKind = kind;
   await hideActiveWebview();
   const body = document.createElement("div"); body.id = "panel";
   const p = document.createElement("div"); p.className = "pc";
@@ -656,32 +743,57 @@ async function openPanel(kind: string, arg?: string) {
   } else if (kind === "downloads") {
     title = "Downloads";
     downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
-    const active = activeDl.slice().reverse().map(d => {
-      const pct = d.done ? 100 : Math.min(99, Math.round((d.received / 1) * 100));
-      const p = d.done
-        ? `<span class="pin">✓</span>`
-        : `<span class="pbar"><i style="width:${pct}%"></i></span>`;
-      return `<div class="prow" data-dl="${esc(d.path)}"><span class="ptitle">${esc(d.path.split(/[\\/]/).pop() || d.url)}</span><small>${esc(d.url)}</small>${p}</div>`;
-    }).join("");
     const saved = downloads.map(d => `<div class="prow" data-dl="${esc(d.path)}"><span class="ptitle">${esc(d.title)}</span><small>${esc(d.path)}</small><span class="pin">✓</span></div>`).join("");
-    content = `<div class="plist">${active ? active : ""}${saved || "<div class='empty'>No saved pages yet</div>"}</div>
+    content = `<div class="plist" id="dl-active"></div>
+      <div class="plist" id="dl-saved">${saved}</div>
       <div class="empty">WebView2 downloads are saved to your OS Downloads folder.</div>`;
   } else if (kind === "settings") {
     title = "Settings";
+    const sw = (key: string, label: string, desc: string, on: boolean) =>
+      `<div class="setrow"><div><div class="lbl">${label}</div>${desc ? `<div class="desc">${desc}</div>` : ""}</div><div class="ctrl"><button class="switch ${on ? "on" : ""}" data-set="${key}"></button></div></div>`;
+    const act = (key: string, label: string, desc: string, value: string) =>
+      `<div class="setrow"><div><div class="lbl">${label}</div>${desc ? `<div class="desc">${desc}</div>` : ""}</div><div class="ctrl"><button class="pbtn" data-act="${key}">${value}</button></div></div>`;
     content = `
-      <div class="prow"><span class="ptitle">Search engine</span>
-        <select class="pselect" id="set-engine">
-          ${Object.keys(ENGINES).map(e => `<option ${e === searchEngine ? "selected" : ""}>${e}</option>`).join("")}
-        </select></div>
-      <div class="prow"><span class="ptitle">User-Agent</span>
-        <select class="pselect" id="set-ua">
-          <option ${desktopMode ? "selected" : ""}>Desktop</option>
-          <option ${!desktopMode ? "selected" : ""}>Mobile</option>
-        </select></div>
-      <div class="prow"><span class="ptitle">Ad blocking</span><button class="pbtn" id="set-adb">${adblockOn ? "On" : "Off"}</button></div>
-      <div class="prow"><span class="ptitle">Clear data on exit (Incognito)</span><button class="pbtn" id="set-clear">${incognitoMode ? "On" : "Off"}</button></div>
-      <div class="prow"><span class="ptitle">Custom CSS</span><textarea class="ptext" id="set-css" placeholder="body { }">${esc(userCss)}</textarea></div>
-      <button class="pbtn primary" id="set-save">Save settings</button>`;
+      <div class="settabs">
+        <button class="settab on" data-cat="general">General</button>
+        <button class="settab" data-cat="custom">Customization</button>
+        <button class="settab" data-cat="privacy">Privacy</button>
+        <button class="settab" data-cat="advanced">Advanced</button>
+        <button class="settab" data-cat="scripts">Scripts</button>
+        <button class="settab" data-cat="about">About</button>
+      </div>
+      <div class="setcat" id="cat-general">
+        <div class="setrow"><div><div class="lbl">Search engine</div></div><div class="ctrl">
+          <select class="pselect" id="set-engine">
+            ${Object.keys(ENGINES).map(e => `<option ${e === searchEngine ? "selected" : ""}>${e}</option>`).join("")}
+          </select></div></div>
+        ${sw("restore", "Restore tabs on startup", "Reopen last session tabs on launch", restoreTabs)}
+        ${sw("clear", "Clear data on exit", "Auto-erase history/cache when closing (Incognito)", incognitoMode)}
+      </div>
+      <div class="setcat" id="cat-custom" hidden>
+        ${sw("night", "Night mode", "Invert page colors with a dark filter", nightMode)}
+        ${sw("images", "Show images", "Display images on web pages", showImages)}
+        ${act("textsize", "Text size", "", Math.round(textSize * 100) + "%")}
+        ${act("ua", "User-Agent", "", desktopMode ? "Desktop" : "Mobile")}
+      </div>
+      <div class="setcat" id="cat-privacy" hidden>
+        ${sw("adb", "Ad blocking", "Block requests/cosmetic ads (EasyList-style)", adblockOn)}
+        ${act("cleardata", "Clear browsing data", "Cookies, cache, history and local storage", "Clear now")}
+      </div>
+      <div class="setcat" id="cat-advanced" hidden>
+        ${sw("netlog", "Network log", "Capture requests into the Network log panel", networkLog)}
+        <div class="setrow"><div><div class="lbl">Custom CSS</div><div class="desc">Inject a style into every page</div></div></div>
+        <textarea class="ptext" id="set-css" placeholder="body { }">${esc(userCss)}</textarea>
+        <button class="pbtn primary" data-act="savecss">Apply CSS</button>
+      </div>
+      <div class="setcat" id="cat-scripts" hidden>
+        ${act("scripts", "Userscripts", "Add, edit and delete Tampermonkey-style scripts", "Manage")}
+      </div>
+      <div class="setcat" id="cat-about" hidden>
+        <div class="setrow"><div><div class="lbl">Via Browser</div><div class="desc">PC port 7.2.1 · Tauri 2 + WebView2 · <5 MB</div></div><div class="ctrl"><span class="pin">✓</span></div></div>
+        <div class="setrow"><div><div class="lbl">Engine</div><div class="desc">OS-native Microsoft Edge WebView2</div></div></div>
+        <div class="setrow"><div><div class="lbl">Homepage</div><div class="desc">Local pure-black start screen (no remote site)</div></div></div>
+      </div>`;
   } else if (kind === "scripts") {
     title = "Scripts";
     const rows = scripts.map((sc, i) => `<div class="prow"><span class="ptitle">${esc(sc.name || "Script")}</span><small>${esc(sc.match_urls || "all pages")}</small><button class="pbtn" data-del="${i}">Delete</button></div>`).join("") || "<div class='empty'>No scripts yet</div>";
@@ -766,7 +878,8 @@ async function openPanel(kind: string, arg?: string) {
     const lc = p.querySelector("#log-clear") as HTMLElement; if (lc) lc.onclick = async () => { await invoke("network_log", { rows: [], clear: true }); closePanel(); openPanel("sniff"); };
   }
   if (kind === "downloads") {
-    (p.querySelectorAll<HTMLElement>("[data-dl]")).forEach(row => row.onclick = () => {
+    refreshDownloadRows(); // renders live active rows + binds open
+    (p.querySelectorAll<HTMLElement>("#dl-saved [data-dl]")).forEach(row => row.onclick = () => {
       const path = row.dataset.dl!;
       invoke("open_download", { path }).catch(() => showToast("File not found"));
     });
@@ -859,17 +972,69 @@ async function openPanel(kind: string, arg?: string) {
     (p.querySelectorAll<HTMLElement>("[data-ai]")).forEach(row => row.onclick = () => { closePanel(); createTab(row.dataset.ai!); });
   }
   if (kind === "settings") {
-    qs("#set-save").onclick = () => {
+    // Tab switching
+    (p.querySelectorAll<HTMLElement>(".settab")).forEach(t => t.onclick = () => {
+      (p.querySelectorAll<HTMLElement>(".settab")).forEach(x => x.classList.remove("on"));
+      t.classList.add("on");
+      (p.querySelectorAll<HTMLElement>(".setcat")).forEach(c => (c as HTMLElement).hidden = true);
+      (qs("#cat-" + t.dataset.cat) as HTMLElement).hidden = false;
+    });
+    // Toggle switches (inline so the panel stays open; persists immediately)
+    (p.querySelectorAll<HTMLElement>("[data-set]")).forEach(b => b.onclick = () => {
+      const k = b.dataset.set!;
+      const on = !b.classList.contains("on");
+      b.classList.toggle("on", on);
+      switch (k) {
+        case "restore":
+          restoreTabs = on; localStorage.setItem("via.restoreTabs", on ? "1" : "0");
+          if (on) saveSession();
+          showToast(on ? "Restore tabs on startup: on" : "Restore tabs on startup: off");
+          break;
+        case "clear":
+          incognitoMode = on; persistSettings({ clear_on_exit: on }); syncMenuUI();
+          showToast(on ? "Incognito on — clears data on exit" : "Incognito off");
+          break;
+        case "night":
+          nightMode = on; persistSettings({ night_mode: on });
+          invoke("set_night_mode", { enabled: on }).catch(()=>{}); syncMenuUI();
+          break;
+        case "images":
+          showImages = on; persistSettings({ show_images: on }); syncMenuUI();
+          evalInActive(`var s=document.getElementById('via-img');if(s)s.remove();if(${on ? "false" : "true"}){s=document.createElement('style');s.id='via-img';s.textContent='img,picture,video{{visibility:hidden!important}}';document.documentElement.appendChild(s);}`).catch(()=>{});
+          break;
+        case "adb":
+          adblockOn = on; persistSettings({ adblock_enabled: on }); syncMenuUI();
+          evalInActive(`var s=document.querySelectorAll('style[data-via]');s.forEach(function(x){x.remove();});location.reload();`).catch(()=>{});
+          break;
+        case "netlog":
+          networkLog = on; persistSettings({ network_log: on }); syncMenuUI();
+          if (on && hasNavigated) invoke("eval_tab", { id: activeId!, js: "location.reload()" }).catch(()=>{});
+          break;
+      }
+      showToast("Saved");
+    });
+    // Action buttons
+    (p.querySelectorAll<HTMLElement>("[data-act]")).forEach(b => b.onclick = () => {
+      const k = b.dataset.act!;
+      switch (k) {
+        case "textsize": closePanel(); openPanel("textsize"); break;
+        case "ua": closePanel(); openPanel("ua"); break;
+        case "cleardata": closePanel(); clearDataNow(); break;
+        case "scripts": closePanel(); openPanel("scripts"); break;
+        case "savecss":
+          userCss = (qs("#set-css") as HTMLTextAreaElement).value;
+          persistSettings({ user_css: userCss });
+          evalInActive(`var s=document.getElementById('via-css');if(s)s.remove();if(${JSON.stringify(userCss)}){s=document.createElement('style');s.id='via-css';s.textContent=${JSON.stringify(userCss)};document.documentElement.appendChild(s);}`).catch(()=>{});
+          showToast("CSS applied (reload to persist)");
+          break;
+      }
+    });
+    // Search engine select persists immediately
+    qs("#set-engine").onchange = () => {
       searchEngine = (qs("#set-engine") as HTMLSelectElement).value;
-      desktopMode = (qs("#set-ua") as HTMLSelectElement).value === "Desktop";
-      adblockOn = (qs("#set-adb") as HTMLElement).textContent === "On";
-      incognitoMode = (qs("#set-clear") as HTMLElement).textContent === "On";
-      userCss = (qs("#set-css") as HTMLTextAreaElement).value;
-      persistSettings({ search_engine: searchEngine, desktop_mode: desktopMode, ua_mode: desktopMode ? "Desktop" : "Mobile", adblock_enabled: adblockOn, clear_on_exit: incognitoMode, user_css: userCss });
-      closePanel(); showToast("Settings saved");
+      persistSettings({ search_engine: searchEngine });
+      showToast("Search engine: " + searchEngine);
     };
-    qs("#set-adb").onclick = () => { qs("#set-adb").textContent = qs("#set-adb").textContent === "On" ? "Off" : "On"; };
-    qs("#set-clear").onclick = () => { qs("#set-clear").textContent = qs("#set-clear").textContent === "On" ? "Off" : "On"; };
   }
 
   document.body.appendChild(body);
@@ -890,6 +1055,7 @@ listen<{ id: number; url: string }>("tab-url", ev => {
   if (!incognitoMode && ev.payload.url && !ev.payload.url.startsWith("about:")) {
     invoke("add_history", { url: ev.payload.url, title: t?.title || ev.payload.url }).catch(()=>{});
   }
+  if (restoreTabs) saveSession();
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
 
@@ -899,21 +1065,35 @@ listen<{ id: number | null; url: string; path: string; done: boolean; success?: 
   const existing = activeDl.find(x => x.url === d.url);
   if (existing) {
     existing.done = d.done || existing.done;
-    existing.success = d.success;
+    if (d.success !== undefined) existing.success = d.success;
   } else {
-    activeDl.push({ url: d.url, path: d.path, received: 0, done: !!d.done, success: d.success });
+    activeDl.push({ url: d.url, path: d.path, received: 0, total: 0, done: !!d.done, success: d.success });
+    // "Download started" toast the moment a new download is requested.
+    showToast("Download started…");
+    // Best-effort total via a same-origin HEAD probe from the active tab
+    // (cross-origin falls back to the indeterminate bar).
+    if (d.url.startsWith("http") && !d.done) {
+      evalInActive(`fetch(${JSON.stringify(d.url)},{method:'HEAD',cache:'no-store'}).then(function(r){var l=+r.headers.get('content-length');if(l>0)window.__viaSend('dlTotal',{url:${JSON.stringify(d.url)},len:l});}).catch(function(){})`).catch(()=>{});
+    }
   }
   if (d.done) showToast(d.success === false ? "Download failed" : "Download complete");
+  if (overlay === "panel") refreshDownloadRows();
 });
 
-// Poll disk size for active downloads so the panel shows real byte progress
-// (WebView2 writes to the destination path while downloading).
+// Poll disk size for active downloads so the panel shows real byte progress.
+// (WebView2 writes to the destination path while downloading.)
 setInterval(async () => {
   if (!activeDl.length || overlay !== "panel") return;
   for (const dl of activeDl) {
     if (dl.done) continue;
-    if (dl.path) dl.received = await invoke<number>("file_size", { path: dl.path }).catch(() => dl.received);
+    if (dl.path) {
+      const sz = await invoke<number>("file_size", { path: dl.path }).catch(() => dl.received);
+      if (sz >= dl.received) dl.received = sz;
+    }
+    // Guess a total when unknown: scale dislikes unknown, but we show an
+    // indeterminate bar in that case, so only refine when size makes sense.
   }
+  refreshDownloadRows();
 }, 800);
 
 // Secure page->host bridge messages (VIA: prefix, forwarded by Rust).
@@ -921,7 +1101,10 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
   let arr: any[] = [];
   try { arr = JSON.parse(ev.payload.msg); } catch { return; }
   const [action, data] = arr;
-  if (action === "markAd" && data?.selector) {
+  if (action === "dlTotal" && data?.url && data?.len > 0) {
+    const dl = activeDl.find(x => x.url === data.url);
+    if (dl) { dl.total = data.len; if (overlay === "panel") refreshDownloadRows(); }
+  } else if (action === "markAd" && data?.selector) {
     const host = data.domain || "";
     try { await invoke("mark_as_ad", { domain: host, selector: data.selector }); } catch {}
     // Re-inject so the new rule applies immediately.
@@ -951,8 +1134,19 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
     gameMode = !!s.game_mode; readAloud = !!s.read_aloud_enabled; adblockOn = s.adblock_enabled !== false;
     scripts = s.scripts || []; sites = s.sites || []; userCss = s.user_css || "";
   } catch {}
+  // Load "Restore tabs on startup" preference and reopen last session.
+  try { restoreTabs = localStorage.getItem("via.restoreTabs") === "1"; } catch {}
   await createTab(undefined, true); // create a tab; webview stays hidden (about:blank)
+  const session = restoreTabs ? sessionUrls() : [];
+  if (session.length) {
+    hasNavigated = true; setHome(false);
+    await navigate(session[0]);
+    for (let i = 1; i < session.length; i++) await createTab(session[i], true);
+    // Re-select the first restored tab so the visible webview matches the active id
+    // (the async tab-url event may not have fired yet, so mirror the URL locally).
+    if (tabs[0]) { tabs[0].url = session[0]; renderTabGrid(); await selectTab(tabs[0].id); }
+  }
   buildMenuUI();
-  setHome(true); // black homepage, no external site
+  setHome(session.length ? false : true); // black homepage (or restored webview)
   hideActiveWebview();
 })();

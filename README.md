@@ -63,7 +63,13 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
 - **Desktop / Mobile / Via UA** — quick User-Agent switch + reload.
 - **Downloads** — WebView2 downloads are intercepted in Rust, saved to the OS
   Downloads folder (with auto-collision handling), and surfaced in a Downloads
-  panel with live byte progress and open file. Saved pages land here too.
+  panel: a "Download started" toast, live byte count, real progress bar (a
+  same-origin HEAD probe supplies the total; otherwise an animated bar), green
+  Completed / red Failed states, and click-to-open. Saved pages land here too.
+- **Settings** — full categorized page (General / Customization / Privacy /
+  Advanced / Scripts / About) with instant switches: search engine, Restore
+  tabs on startup (reopens last session), Clear data on exit (Incognito),
+  Night mode, Show images, Ad blocking, Network log, custom CSS, and more.
 - **Privacy** — clear cache & history, Incognito (no history + auto-clear on
   exit), and a cookie inspector.
 - **Persistence** — bookmarks, history, downloads/saved pages, scripts,

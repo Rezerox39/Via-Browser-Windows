@@ -37,7 +37,7 @@ pub struct SettingsState(pub Mutex<Settings>);
 /// Height of the HTML bottom navigation bar — must match CSS `--nav-h`.
 /// The native webview is positioned at the very top (y=0) with a height that
 /// never includes the bottom bar area, so the nav bar always stays visible.
-pub const NAV_HEIGHT: f64 = 56.0;
+pub const NAV_HEIGHT: f64 = 60.0; // must match CSS --nav-h
 
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())

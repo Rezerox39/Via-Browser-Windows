@@ -37,15 +37,21 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 /* hollow pill search bar */
 #home .pill {
   width: min(420px, 80%);
-  height: 44px; border-radius: 22px;
-  border: 1px solid var(--gray-dim);
+  height: 48px; border-radius: 24px;
+  border: 1px solid #3a3f45;
   background: transparent;
   display: flex; align-items: center; padding: 0 18px; gap: 10px;
-  color: var(--gray); cursor: text; font-size: 15px;
+  color: var(--white); cursor: text; font-size: 15px;
   transition: all .2s ease-in-out;
 }
-#home .pill:hover { border-color: var(--gray); color: var(--white); }
-#home .pill svg { width: 18px; height: 18px; margin-right: 2px; }
+#home .pill:focus-within { border-color: var(--white); box-shadow: 0 0 0 2px rgba(255,255,255,.12); }
+#home .pill:hover { border-color: var(--white); }
+#home .pill svg { width: 18px; height: 18px; margin-right: 2px; color: var(--white); flex: 0 0 auto; }
+#home .pill input {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--white); font-size: 15px; min-width: 0;
+}
+#home .pill input::placeholder { color: #9aa0a8; }
 
 /* ---------- Address overlay (top) ---------- */
 #addr {
@@ -93,9 +99,10 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 #menu.show .sheet { transform: translateX(-50%) translateY(0); }
 #menu .grip { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 12px; }
 #menu .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-#menu .grid .item { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 4px; border-radius: 12px; cursor: pointer; font-size: 11px; color: var(--gray); }
-#menu .grid .item:hover { background: var(--panel-2); color: var(--white); }
-#menu .grid .item.on { color: var(--accent); }
+#menu .grid .item { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 4px; border-radius: 12px; cursor: pointer; font-size: 11px; color: var(--white); }
+#menu .grid .item:hover { background: var(--panel-2); }
+#menu .grid .item:active { opacity: .7; }
+#menu .grid .item.on svg { color: var(--accent); }
 #menu .grid .item svg { width: 24px; height: 24px; }
 
 /* ---------- Bottom nav bar: centered 500px ---------- */
@@ -107,9 +114,10 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
   max-width: var(--maxw); height: 100%; margin: 0 auto;
   display: flex; justify-content: space-between; align-items: center; padding: 0 24px;
 }
-#nav button { border: none; background: none; color: var(--gray); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 10px; border-radius: 50%; transition: color .12s, background .12s; }
+#nav button { border: none; background: none; color: var(--white); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 10px; border-radius: 50%; transition: color .12s, background .12s; }
 #nav button svg { width: 26px; height: 26px; }
-#nav button:hover, #nav button.active { color: var(--white); background: var(--panel-2); }
+#nav button:hover, #nav button.active { background: var(--panel-2); }
+#nav button:active { opacity: .7; }
 #nav .count { min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--gray-dim); color: var(--white); font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
 
 /* Toast */
@@ -154,3 +162,33 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 #panel .ptext { background: var(--panel-2); color: var(--white); border: 1px solid var(--line); border-radius: 10px; padding: 10px; font: 12px/1.5 monospace; width: 100%; min-height: 120px; resize: vertical; }
 #panel label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--gray); }
 #panel .qr { background: #fff; border-radius: 12px; padding: 18px; margin: 12px 0; text-align: center; }
+
+/* ---------- Downloads progress ---------- */
+#panel .prow { gap: 6px; }
+#panel .dmeta { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+#panel .dmeta small { flex: 1; word-break: break-all; }
+#panel .dstat { font-size: 11px; color: var(--gray); white-space: nowrap; flex: 0 0 auto; }
+#panel .dbar { position: relative; height: 6px; border-radius: 3px; background: #2a2d33; overflow: hidden; }
+#panel .dbar > i { position: absolute; inset: 0 auto 0 0; width: 0%; background: var(--accent); border-radius: 3px; transition: width .3s ease; }
+#panel .dbar.indet > i { width: 100%; background: var(--accent); animation: dlIndet 1.2s ease-in-out infinite; transform-origin: left; }
+@keyframes dlIndet { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+#panel .prow.done .dbar > i { background: #2ecc71; }
+#panel .prow.done .dstat { color: #2ecc71; }
+#panel .prow.failed .dbar > i { background: #ff6b6b; }
+#panel .prow.failed .dstat { color: #ff6b6b; }
+
+/* ---------- Settings page ---------- */
+#panel .setcat { display: flex; flex-direction: column; gap: 8px; }
+#panel .setrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--panel-2); border-radius: 12px; padding: 11px 13px; }
+#panel .setrow .lbl { font-size: 13px; color: var(--white); }
+#panel .setrow .desc { font-size: 11px; color: var(--gray); margin-top: 2px; }
+#panel .setrow .ctrl { flex: 0 0 auto; }
+#panel .switch { position: relative; width: 46px; height: 26px; border-radius: 13px; background: #2a2d33; border: none; cursor: pointer; transition: background .18s; }
+#panel .switch.on { background: var(--accent); }
+#panel .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: left .18s; }
+#panel .switch.on::after { left: 23px; }
+#panel .settabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; }
+#panel .settab { border: 1px solid var(--line); background: transparent; color: var(--gray); border-radius: 18px; padding: 7px 14px; font-size: 12px; cursor: pointer; }
+#panel .settab.on { background: var(--panel-2); color: var(--white); border-color: var(--line); }
+#panel .setcat[hidden] { display: none; }
+#panel .prow.clickable { cursor: pointer; }

@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
@@ -195,6 +194,7 @@ pub fn download_from_js(
     url: String,
     filename: Option<String>,
 ) -> Result<String, String> {
+    // 1. Robust path resolution: always the user's OS Downloads folder.
     let download_dir = app
         .path()
         .download_dir()
@@ -226,52 +226,87 @@ pub fn download_from_js(
     let _ = std::fs::remove_file(&dest); // fresh copy; no clobber logic needed for fallback
 
     let win = app.get_webview_window("main");
-    if let Some(win) = &win {
-        let _ = win.emit("download-started", serde_json::json!({
-            "id": null, "url": url, "path": dest.to_string_lossy(),
-        }));
-    }
+    let emit = |name: &str, payload: serde_json::Value| {
+        if let Some(win) = &win {
+            let _ = win.emit(name, payload);
+        }
+    };
 
     println!("[via] JS download: {url} -> {}", dest.display());
-    let out = Command::new(if cfg!(target_os = "windows") { "curl.exe" } else { "curl" })
-        .arg("-sS")
-        .arg("--max-time")
-        .arg("600")
-        .arg("--fail")
-        .arg("-A")
-        .arg("ViaBrowser/7.2.1")
-        .arg("-L")
-        .arg("-o")
-        .arg(&dest)
-        .arg(&url)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !out.status.success() {
-        let _ = std::fs::remove_file(&dest);
-        if let Some(win) = &win {
-            let _ = win.emit("download-progress", serde_json::json!({
-                "id": null, "url": url, "path": dest.to_string_lossy(),
-                "received": 0, "total": 0, "done": true, "success": false,
-            }));
+    // 2. HTTP GET via reqwest (rustls; no OpenSSL needed for cross-builds).
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("ViaBrowser/7.2.1")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("download client error: {e}"))?;
+    let resp = match client.get(&url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            emit("download-progress", finished_payload(&url, &dest, 0, 0, false));
+            return Err(format!("download request error: {e}"));
         }
-        return Err(format!(
-            "download failed ({}): {}",
-            out.status,
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+    };
+    if !resp.status().is_success() {
+        let code = resp.status();
+        emit("download-progress", finished_payload(&url, &dest, 0, 0, false));
+        return Err(format!("download failed: HTTP {code}"));
     }
+    let total = resp.content_length().unwrap_or(0);
 
-    record_download(&app, &state, url.clone(), dest.clone());
-    if let Some(win) = &win {
-        let _ = win.emit("download-progress", serde_json::json!({
-            "id": null, "url": url, "path": dest.to_string_lossy(),
-            "received": std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
-            "total": std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
-            "done": true, "success": true,
-        }));
+    // 3. Accurate IPC start event: filename + Content-Length.
+    emit("download-started", serde_json::json!({
+        "id": null, "url": url, "path": dest.to_string_lossy(), "total": total,
+    }));
+
+    // 4. Stream to disk, emitting progress at regular intervals.
+    let mut file = std::fs::File::create(&dest).map_err(|e| e.to_string())?;
+    use std::io::Read;
+    let mut reader = resp.take(if total > 0 { total } else { u64::MAX });
+    let mut buf = [0u8; 64 * 1024];
+    let mut received: u64 = 0;
+    let mut last_emit = std::time::Instant::now();
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                use std::io::Write;
+                if file.write_all(&buf[..n]).is_err() {
+                    let _ = std::fs::remove_file(&dest);
+                    emit("download-progress", finished_payload(&url, &dest, received, total, false));
+                    return Err("download write error".into());
+                }
+                received += n as u64;
+                if last_emit.elapsed().as_millis() >= 150 || received >= total {
+                    emit("download-progress", serde_json::json!({
+                        "id": null, "url": url, "path": dest.to_string_lossy(),
+                        "received": received, "total": total, "done": false,
+                    }));
+                    last_emit = std::time::Instant::now();
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&dest);
+                emit("download-progress", finished_payload(&url, &dest, received, total, false));
+                return Err(format!("download stream error: {e}"));
+            }
+        }
     }
+    drop(file);
+
+    // 5. Completion: persist + tell the UI it is done.
+    record_download(&app, &state, url.clone(), dest.clone());
+    emit("download-progress", finished_payload(&url, &dest, received, total, true));
+    emit("download-finished", serde_json::json!({
+        "id": null, "url": url, "path": dest.to_string_lossy(), "done": true, "success": true,
+    }));
     Ok(dest.to_string_lossy().into_owned())
+}
+
+fn finished_payload(url: &str, dest: &std::path::Path, received: u64, total: u64, success: bool) -> serde_json::Value {
+    serde_json::json!({
+        "id": null, "url": url, "path": dest.to_string_lossy(),
+        "received": received, "total": total, "done": true, "success": success,
+    })
 }
 
 fn sanitize(s: &str) -> String {

@@ -1211,11 +1211,11 @@ listen<{ id: number; url: string }>("tab-url", ev => {
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
 
-const DL_URL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma)([?#]|$)/i;
+const DL_URL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
 function isDlUrl(u: string) { try { return !!new URL(u).pathname.match(DL_URL_RE); } catch { return false; } }
-function startDl(u: string) {
+function startDl(u: string, filename: string | null = null) {
   showToast("Downloading…");
-  invoke<string>("download_from_js", { url: u, filename: null })
+  invoke<string>("download_from_js", { url: u, filename: filename || null })
     .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
     .catch((err: any) => {
       console.error("[via] download failed:", err);
@@ -1278,6 +1278,20 @@ listen<{ id: number | null; url: string; path: string; done: boolean; success?: 
   if (overlay === "panel") refreshDownloadRows();
 });
 
+// Host finished streaming a JS-fallback download (download_from_js).
+listen<{ id: number | null; url: string; path: string; done: boolean; success?: boolean }>("download-finished", ev => {
+  const d = ev.payload;
+  const existing = activeDl.find(x => x.url === d.url);
+  if (existing) {
+    existing.done = true;
+    if (d.success !== undefined) existing.success = d.success;
+  } else {
+    activeDl.push({ url: d.url, path: d.path, received: 0, total: 0, done: true, success: d.success });
+  }
+  showToast(d.success === false ? "Download failed" : "Download complete");
+  if (overlay === "panel") refreshDownloadRows();
+});
+
 // Poll disk size for active downloads so the panel shows real byte progress.
 // (WebView2 writes to the destination path while downloading.)
 setInterval(async () => {
@@ -1299,7 +1313,7 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
   let arr: any[] = [];
   try { arr = JSON.parse(ev.payload.msg); } catch { return; }
   const [action, data] = arr;
-  if (action === "download" && data?.url) {
+  if ((action === "download" || action === "startDl") && data?.url) {
     invoke<string>("download_from_js", { url: data.url, filename: data?.filename || null })
       .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
       .catch((err: any) => {

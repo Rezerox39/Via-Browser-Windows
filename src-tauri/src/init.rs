@@ -156,27 +156,35 @@ pub fn build(s: &Settings) -> String {
     window.__viaSniff = function () {{ try {{ scan(); }} catch (e) {{}} return window.__viaMedia.slice(); }};
   }})();
 
-  // ---- Download-link capture (HTML5 download attrs, _blank file links) ----
-  // WebView2's native DownloadStarting can be unreliable for child webviews;
-  // this is the Via-style safety net: intercept obvious download clicks and
-  // hand the URL to the host, which downloads it into the OS Downloads folder.
-  var DL_RE = /\\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma)([?#]|$)/i;
+  // ---- Download-link capture (EVERY file link, incl. target=_blank) ----
+  // WebView2's native DownloadStarting + new-window interception is unreliable
+  // on Windows. Like a standard browser, we intercept every click on a link
+  // that points to a file extension (regardless of the download attribute or
+  // target="_blank") and stream the file straight to the OS Downloads folder
+  // via the host's download_from_js command.
+  var DL_RE = /\\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
+  function viaFilename(href) {{
+    try {{
+      var p = href.split(/[?#]/)[0].split("/");
+      return decodeURIComponent(p[p.length - 1] || "");
+    }} catch (e) {{ return ""; }}
+  }}
   document.addEventListener("click", function (e) {{
     try {{
       if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
       if (!a) return;
       var href = a.getAttribute("href") || "";
-      var dlAttr = a.hasAttribute("download") && a.getAttribute("download") !== "false";
       var isBlob = href.indexOf("blob:") === 0 || href.indexOf("data:") === 0;
       var isFile = DL_RE.test(href);
-      if (!dlAttr && !isBlob && !isFile) return;
+      var dlAttr = a.hasAttribute("download") && a.getAttribute("download") !== "false";
+      if (!isBlob && !isFile && !dlAttr) return;
       // Only swallow left-click navigations that look like downloads. Let the
-      // OS/browser handle anything ambiguous normally.
+      // host stream the file; prevent new-window/navigation entirely.
       e.preventDefault();
       e.stopPropagation();
       var u = new URL(href, location.href).href;
-      window.__viaSend("download", {{ url: u, filename: dlAttr ? (a.getAttribute("download") || "") : "" }});
+      window.__viaSend("startDl", {{ url: u, filename: viaFilename(u) }});
     }} catch (err) {{}}
   }}, true);
 

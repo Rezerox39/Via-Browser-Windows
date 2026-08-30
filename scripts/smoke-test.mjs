@@ -8,7 +8,12 @@ const { window } = dom; const { document } = window;
 let tabId = 0; const store = { tabs: [], bookmarks: [], history: [], downloads: [] };
 const settings = { homepage: "about:blank", search_engine: "Google", ua_mode: "Desktop", custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_css: "", user_js: "", night_mode: false, desktop_mode: true, text_size: 1, show_images: true, network_log: false, game_mode: false, read_aloud_enabled: false, scripts: [], sites: [], pages_log: [] };
 const listeners = new Map();
+const registeredEvents = new Set();
 const invoke = async (cmd, args = {}) => {
+  if (cmd === "plugin:event|listen" && args && args.event) {
+    registeredEvents.add(args.event);
+    return "evt-" + registeredEvents.size;
+  }
   switch (cmd) {
     case "get_settings": return { ...settings };
     case "set_settings": return null;
@@ -82,6 +87,15 @@ const fails = results.filter(r => r.opened === false || r.closes === false || (r
 if (results.some(r => r.singlePcVisible === false && r.opened)) {
   console.error("FAIL: panel .pc nesting/visibility guard", JSON.stringify(results));
   process.exit(1);
+}
+// The frontend must be wired to Rust's download IPC, otherwise downloads never
+// surface as a toast or in the panel. These are registered via the event
+// plugin at startup, so assert the bundle subscribed to them.
+for (const ev of ["download-started", "download-progress", "tab-url"]) {
+  if (!registeredEvents.has(ev)) {
+    console.error(`FAIL: frontend has no "${ev}" IPC listener; download chain is disconnected`);
+    process.exit(1);
+  }
 }
 if (fails.length) { console.error("FAIL:", JSON.stringify(fails)); process.exit(1); }
 console.log("SMOKE TEST PASSED");

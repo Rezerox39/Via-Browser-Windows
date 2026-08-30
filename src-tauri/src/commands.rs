@@ -39,6 +39,39 @@ pub struct SettingsState(pub Mutex<Settings>);
 /// never includes the bottom bar area, so the nav bar always stays visible.
 pub const NAV_HEIGHT: f64 = 60.0; // must match CSS --nav-h
 
+/// File extensions that WebView2 hands off to the download engine instead of
+/// rendering. Never let the adblock navigation hook veto these: a "blocked"
+/// navigation to a direct file URL silently kills the download before
+/// `on_download` ever sees it.
+const DOWNLOAD_EXTS: &[&str] = &[
+    "apk", "xapk", "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img",
+    "exe", "msi", "msix", "deb", "rpm", "dmg", "pkg", "torrent",
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "ts", "mpg", "mpeg", "3gp",
+    "mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma",
+    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md", "epub", "mobi",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "raw",
+];
+
+fn is_download_eligible(url: &Url) -> bool {
+    if matches!(url.scheme(), "blob" | "data") {
+        return true;
+    }
+    // A URL that is missing a host (e.g. a browser-internal scheme) can never
+    // be an ad target; don't risk blocking a download initiated from one.
+    if url.host_str().is_none() {
+        return true;
+    }
+    url.path_segments()
+        .and_then(|mut segs| segs.next_back())
+        .and_then(|seg| {
+            let dot = seg.rfind('.')?;
+            let ext = &seg[dot + 1..];
+            ext.chars().all(|c| c.is_ascii_alphanumeric()).then(|| ext.to_ascii_lowercase())
+        })
+        .map(|ext| DOWNLOAD_EXTS.contains(&ext.as_str()))
+        .unwrap_or(false)
+}
+
 fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
@@ -266,58 +299,65 @@ pub async fn create_tab(
                 .find_map(|(i, l)| if *l == dl_label { Some(*i) } else { None });
             match event {
                 DownloadEvent::Requested { url, destination } => {
-                    let dir = wv_app.path().download_dir();
-                    if let Ok(dir) = dir {
-                        let _ = std::fs::create_dir_all(&dir);
-                        // Decode the real filename; fall back to a ?filename= /
-                        // ?file= / ?name= query param, then a timestamped name.
-                        let fname = url
-                            .path_segments()
-                            .and_then(|segs| segs.last())
-                            .filter(|f| !f.is_empty())
-                            .and_then(|f| percent_decode(f))
-                            .filter(|f| !f.is_empty() && f.len() < 128)
-                            .or_else(|| {
-                                url.query_pairs().find_map(|(k, v)| {
-                                    matches!(k.as_ref(), "filename" | "file" | "name" | "download")
-                                        .then(|| v.to_string())
-                                        .filter(|f| !f.is_empty() && f.len() < 128)
-                                })
+                    println!("[via] DOWNLOAD REQUESTED: {:?}", url.to_string());
+                    // Prefer the OS Downloads folder; never leave `destination`
+                    // unset — wry only forwards a valid absolute path when we
+                    // assign one here, otherwise the transfer is silently dropped.
+                    let dir = wv_app
+                        .path()
+                        .download_dir()
+                        .unwrap_or_else(|_| std::env::temp_dir());
+                    let _ = std::fs::create_dir_all(&dir);
+                    // Decode the real filename; fall back to a ?filename= /
+                    // ?file= / ?name= query param, then a timestamped name.
+                    let fname = url
+                        .path_segments()
+                        .and_then(|segs| segs.last())
+                        .filter(|f| !f.is_empty())
+                        .and_then(|f| percent_decode(f))
+                        .filter(|f| !f.is_empty() && f.len() < 128)
+                        .or_else(|| {
+                            url.query_pairs().find_map(|(k, v)| {
+                                matches!(k.as_ref(), "filename" | "file" | "name" | "download")
+                                    .then(|| v.to_string())
+                                    .filter(|f| !f.is_empty() && f.len() < 128)
                             })
-                            .unwrap_or_else(|| {
-                                let ts = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0);
-                                format!("download-{ts}")
-                            });
-                        let dest = dir.join(&fname);
-                        // If a file with that name exists, avoid clobbering.
-                        let dest = if dest.exists() {
-                            let stem = dest.file_stem().and_then(|f| f.to_str()).unwrap_or("download");
-                            let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
-                            let mut n = 1;
-                            let mut candidate = dir.join(format!("{stem} ({n}).{ext}"));
-                            while candidate.exists() && n < 1000 {
-                                n += 1;
-                                candidate = dir.join(format!("{stem} ({n}).{ext}"));
-                            }
-                            candidate
-                        } else {
-                            dest
-                        };
-                        *destination = dest.clone();
-                        if let Some(win) = &win {
-                            let _ = win.emit("download-started", serde_json::json!({
-                                "id": id, "url": url.to_string(), "path": dest.to_string_lossy(),
-                            }));
-                            let _ = win.emit("download-progress", serde_json::json!({
-                                "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
-                            }));
+                        })
+                        .unwrap_or_else(|| {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            format!("download-{ts}")
+                        });
+                    let dest = dir.join(&fname);
+                    // If a file with that name exists, avoid clobbering.
+                    let dest = if dest.exists() {
+                        let stem = dest.file_stem().and_then(|f| f.to_str()).unwrap_or("download");
+                        let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        let mut n = 1;
+                        let mut candidate = dir.join(format!("{stem} ({n}).{ext}"));
+                        while candidate.exists() && n < 1000 {
+                            n += 1;
+                            candidate = dir.join(format!("{stem} ({n}).{ext}"));
                         }
+                        candidate
+                    } else {
+                        dest
+                    };
+                    *destination = dest.clone();
+                    println!("[via]   -> authorizing download to {}", dest.display());
+                    if let Some(win) = &win {
+                        let _ = win.emit("download-started", serde_json::json!({
+                            "id": id, "url": url.to_string(), "path": dest.to_string_lossy(),
+                        }));
+                        let _ = win.emit("download-progress", serde_json::json!({
+                            "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
+                        }));
                     }
                 }
                 DownloadEvent::Finished { url, path, success } => {
+                    println!("[via] DOWNLOAD FINISHED: {:?} success={}", url.to_string(), success);
                     if let Some(win) = &win {
                         let _ = win.emit("download-progress", serde_json::json!({
                             "id": id, "url": url.to_string(),
@@ -369,6 +409,14 @@ pub async fn create_tab(
             }
         })
         .on_navigation(move |url| {
+            println!("[via] NAVIGATING TO: {url}");
+            // Direct file URLs (and blob:/data: schemes) are downloads, not
+            // pages. Adblock must never veto them or the file transfer is
+            // canceled before the download engine even starts.
+            if is_download_eligible(&url) {
+                println!("[via]   -> download-eligible URL, navigation allowed");
+                return true;
+            }
             // Main-frame adblock: block navigation to blocked hosts.
             // Honours the default toggle and per-site ("Site configuration") overrides.
             let host = url.host_str().unwrap_or("").to_lowercase();

@@ -6,7 +6,7 @@ const html = readFileSync("index.html", "utf8");
 const dom = new JSDOM(html, { runScripts: "outside-only", pretendToBeVisual: true, url: "http://localhost/" });
 const { window } = dom; const { document } = window;
 let tabId = 0; const store = { tabs: [], bookmarks: [], history: [], downloads: [] };
-const settings = { homepage: "about:blank", search_engine: "Google", ua_mode: "Desktop", custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_css: "", user_js: "", night_mode: false, desktop_mode: true, text_size: 1, show_images: true, network_log: false, game_mode: false, read_aloud_enabled: false, scripts: [], sites: [], pages_log: [] };
+const settings = { homepage: "about:blank", search_engine: "Google", ua_mode: "Desktop", custom_ua: "", adblock_enabled: true, clear_on_exit: false, user_css: "", user_js: "", night_mode: false, desktop_mode: true, text_size: 1, show_images: true, network_log: false, search_suggest: false, game_mode: false, read_aloud_enabled: false, scripts: [], sites: [], pages_log: [] };
 const listeners = new Map();
 const registeredEvents = new Set();
 const invoke = async (cmd, args = {}) => {

@@ -56,6 +56,9 @@ pub struct Settings {
     pub text_size: f64,          // zoom factor, 0.5..=3.0; 1.0 = normal
     pub show_images: bool,       // false = hide all images (img { display:none })
     pub network_log: bool,       // "Network log" capture toggle
+    pub search_suggest: bool,     // live search suggestions (off by default:
+                                  // avoids per-keystroke network calls that
+                                  // trigger CAPTCHA/typing lag)
     pub game_mode: bool,         // Via's "Game mode" (max performance / block refresh)
     pub read_aloud_enabled: bool,
     pub scripts: Vec<UserScript>,
@@ -79,6 +82,7 @@ impl Default for Settings {
             text_size: 1.0,
             show_images: true,
             network_log: false,
+            search_suggest: false,
             game_mode: false,
             read_aloud_enabled: false,
             scripts: Vec::new(),

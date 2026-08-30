@@ -10,6 +10,7 @@ type Settings = {
   night_mode: boolean; desktop_mode: boolean;
   text_size: number; show_images: boolean; network_log: boolean; game_mode: boolean;
   read_aloud_enabled: boolean;
+  search_suggest: boolean;
   scripts: UserScript[]; sites: SiteConfig[]; pages_log: string[][];
 };
 type UserScript = { id: string; name: string; match_urls: string; code: string; enabled: boolean };
@@ -30,6 +31,7 @@ let activeId: number | null = null;
 let nightMode = false;
 let desktopMode = true;
 let searchEngine = "Google";
+let searchSuggest = false;
 let hasNavigated = false;          // true once the user navigates off the homepage
 let overlay: "none" | "addr" | "tabs" | "menu" | "panel" = "none";
 let panelKind: string | null = null;
@@ -112,6 +114,7 @@ function locationIt() { const t = tabs.find(x => x.id === activeId); return t &&
 let pillSugT: any;
 let pillSugSeq = 0;
 async function pillSuggest() {
+  if (!searchSuggest) { sug.classList.remove("open"); return; }
   const q2 = pillInput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
   const seq = ++pillSugSeq;
   try {
@@ -161,6 +164,7 @@ async function goAddr() {
 let sugT: any;
 let sugSeq = 0;
 async function doSuggest() {
+  if (!searchSuggest) { sug.classList.remove("open"); return; }
   const q2 = ainput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
   const seq = ++sugSeq;
   try {
@@ -667,7 +671,7 @@ function getDefault(): Settings {
     homepage: "about:blank", search_engine: searchEngine, ua_mode: desktopMode ? "Desktop" : "Mobile",
     custom_ua: "", adblock_enabled: adblockOn, clear_on_exit: incognitoMode, user_js: "",
     night_mode: nightMode, desktop_mode: desktopMode, text_size: textSize, show_images: showImages,
-    network_log: networkLog, game_mode: gameMode, read_aloud_enabled: readAloud,
+    network_log: networkLog, search_suggest: searchSuggest, game_mode: gameMode, read_aloud_enabled: readAloud,
     user_css: userCss, scripts, sites, pages_log: [],
   };
 }
@@ -907,6 +911,7 @@ async function openPanel(kind: string, arg?: string) {
       </div>
       <div class="setcat" id="cat-advanced" hidden>
         ${sw("netlog", "Network log", "Capture requests into the Network log panel", networkLog)}
+        ${sw("suggest", "Search suggestions", "Live suggestions while typing (extra network requests)", searchSuggest)}
         <div class="setrow"><div><div class="lbl">Custom CSS</div><div class="desc">Inject a style into every page</div></div></div>
         <textarea class="ptext" id="set-css" placeholder="body { }">${esc(userCss)}</textarea>
         <button class="pbtn primary" data-act="savecss">Apply CSS</button>
@@ -1148,6 +1153,10 @@ async function openPanel(kind: string, arg?: string) {
           networkLog = on; persistSettings({ network_log: on }); syncMenuUI();
           if (on && hasNavigated) invoke("eval_tab", { id: activeId!, js: "location.reload()" }).catch(()=>{});
           break;
+        case "suggest":
+          searchSuggest = on; persistSettings({ search_suggest: on }); syncMenuUI();
+          if (!on) sug.classList.remove("open");
+          break;
       }
       showToast("Saved");
     });
@@ -1318,6 +1327,7 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
     const s: Settings = await invoke("get_settings");
     searchEngine = s.search_engine; nightMode = s.night_mode; desktopMode = s.desktop_mode;
     textSize = s.text_size || 1; showImages = s.show_images !== false; networkLog = !!s.network_log;
+    searchSuggest = s.search_suggest !== false; // SERP suggestions off unless enabled
     gameMode = !!s.game_mode; readAloud = !!s.read_aloud_enabled; adblockOn = s.adblock_enabled !== false;
     scripts = s.scripts || []; sites = s.sites || []; userCss = s.user_css || "";
   } catch {}

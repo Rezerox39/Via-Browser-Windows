@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_HOMEPAGE: &str = "https://www.bing.com";
+pub const DEFAULT_HOMEPAGE: &str = "https://www.google.com/";
 
 /// A single user script (Tampermonkey-style) executed on matching pages.
 #[derive(Clone, Debug, Serialize, Deserialize)]

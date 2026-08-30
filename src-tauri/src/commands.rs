@@ -200,7 +200,6 @@ pub fn search_suggest(query: String, engine: String) -> Result<Vec<SuggestItem>,
 fn engine_url(engine: &str, query: &str) -> Result<Url, String> {
     let q = urlencoding(query.trim());
     let template = match engine {
-        "Bing" => "https://api.bing.com/osjson.aspx?query={q}",
         "DuckDuckGo" => "https://duckduckgo.com/ac/?q={q}&type=list",
         "Baidu" => "https://suggestion.baidu.com/su?wd={q}",
         _ => "https://suggestqueries.google.com/complete/search?client=firefox&q={q}",
@@ -647,7 +646,7 @@ pub fn normalize_url(input: &str) -> String {
         return format!("https://{}", t);
     }
     let q = urlencoding(t);
-    format!("https://www.bing.com/search?q={q}")
+    format!("https://www.google.com/search?q={q}")
 }
 
 /// Minimal percent-decoder ("%XX" -> byte), returning None on malformed input.
@@ -709,7 +708,6 @@ pub fn parse_address(input: &str, search_engine: &str) -> String {
     // otherwise: search
     let q = urlencoding(no_scheme);
     let template = match search_engine {
-        "Bing" => "https://www.bing.com/search?q={q}",
         "DuckDuckGo" => "https://duckduckgo.com/?q={q}",
         "Baidu" => "https://www.baidu.com/s?wd={q}",
         _ => "https://www.google.com/search?q={q}",

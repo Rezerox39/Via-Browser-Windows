@@ -21,7 +21,7 @@ type DlItem = { url: string; path: string; title: string; size: number; done: bo
 type ActiveDl = { url: string; path: string; received: number; total: number; done: boolean; success?: boolean };
 
 const ENGINES: Record<string, string> = {
-  Google: "https://www.google.com/search?q=", Bing: "https://www.bing.com/search?q=",
+  Google: "https://www.google.com/search?q=",
   DuckDuckGo: "https://duckduckgo.com/?q=", Baidu: "https://www.baidu.com/s?wd=",
 };
 
@@ -31,7 +31,6 @@ let activeId: number | null = null;
 let nightMode = false;
 let desktopMode = true;
 let searchEngine = "Google";
-let searchSuggest = false;
 let hasNavigated = false;          // true once the user navigates off the homepage
 let overlay: "none" | "addr" | "tabs" | "menu" | "panel" = "none";
 let panelKind: string | null = null;
@@ -108,35 +107,39 @@ function setHome(on: boolean) {
 async function hideActiveWebview() { if (activeId != null) await invoke("hide_tab", { id: activeId }).catch(()=>{}); }
 async function showActiveWebview() { if (activeId != null) await invoke("show_tab", { id: activeId }).catch(()=>{}); }
 function evalInActive(js: string) { if (activeId != null) return invoke("eval_tab", { id: activeId, js }); return Promise.resolve(); }
-function locationIt() { const t = tabs.find(x => x.id === activeId); return t && t.url && !t.url.startsWith("about:") ? t.url : "https://www.bing.com"; }
+function locationIt() { const t = tabs.find(x => x.id === activeId); return t && t.url && !t.url.startsWith("about:") ? t.url : "https://www.google.com/"; }
 
 /* ---- Overlays ---- */
 let pillSugT: any;
-let pillSugSeq = 0;
-async function pillSuggest() {
-  if (!searchSuggest) { sug.classList.remove("open"); return; }
-  const q2 = pillInput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
-  const seq = ++pillSugSeq;
-  try {
-    const items: any[] = await invoke("search_suggest", { query: q2, engine: searchEngine });
-    // Drop out-of-order responses: if the user typed something newer while
-    // this request was in flight, ignore it (prevents suggestion flicker).
-    if (seq !== pillSugSeq || pillInput.value.trim() !== q2) return;
-    // Show suggestions inside the address overlay for the homepage input too.
-    if (items.length) {
-      sug.innerHTML = "";
-      items.slice(0, 6).forEach(it => { const d = document.createElement("div"); d.className = "item"; d.textContent = it.label; d.onclick = () => { pillInput.value = it.label; pillSuggest(); }; sug.appendChild(d); });
-      // position suggestion dropdown under the homepage pill
-      const r = (pillInput.parentElement as HTMLElement).getBoundingClientRect();
-      (sug as HTMLElement).style.position = "fixed";
-      (sug as HTMLElement).style.top = (r.bottom + 8) + "px";
-      (sug as HTMLElement).style.left = "50%";
-      (sug as HTMLElement).style.transform = "translateX(-50%)";
-      (sug as HTMLElement).style.maxWidth = "min(420px, 80%)";
-      sug.classList.add("open");
-    } else { sug.classList.remove("open"); }
-  } catch { sug.classList.remove("open"); }
+// Live network suggestions are COMPLETELY disabled (no requests while typing:
+// they caused CAPTCHA pages and typing lag). The dropdown only shows LOCAL
+// history/bookmark matches, filtered synchronously on the client.
+function showLocalSuggest(input: HTMLInputElement, to: (v: string) => void) {
+  const q2 = input.value.trim().toLowerCase();
+  if (q2.length < 2) { sug.classList.remove("open"); return; }
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  for (const h of historyItems) {
+    const label = h.title || h.url;
+    if (!label || seen.has(label)) continue;
+    if (label.toLowerCase().includes(q2)) {
+      seen.add(label);
+      rows.push(`<div class="item" data-v="${esc(label)}"><span>${esc(label)}</span></div>`);
+      if (rows.length >= 6) break;
+    }
+  }
+  if (!rows.length) { sug.classList.remove("open"); return; }
+  sug.innerHTML = rows.join("");
+  (sug as HTMLElement).querySelectorAll<HTMLElement>(".item").forEach(d => d.onclick = () => { to(d.dataset.v || ""); });
+  const r = (input.parentElement as HTMLElement).getBoundingClientRect();
+  (sug as HTMLElement).style.position = "fixed";
+  (sug as HTMLElement).style.top = (r.bottom + 8) + "px";
+  (sug as HTMLElement).style.left = "50%";
+  (sug as HTMLElement).style.transform = "translateX(-50%)";
+  (sug as HTMLElement).style.maxWidth = "min(420px, 80%)";
+  sug.classList.add("open");
 }
+function pillSuggest() { showLocalSuggest(pillInput, v => { pillInput.value = v; pillInput.focus(); }); }
 function openAddr() {
   overlay = "addr"; addr.classList.add("open");
   hideActiveWebview(); // hide native webview so the address overlay is visible
@@ -151,7 +154,7 @@ function closeOverlay() {
 }
 
 /* ---- URL helpers ---- */
-function searchUrl(engine: string, q2: string) { return (ENGINES[engine] || ENGINES.Bing) + encodeURIComponent(q2); }
+function searchUrl(engine: string, q2: string) { return (ENGINES[engine] || ENGINES.Google) + encodeURIComponent(q2); }
 async function goAddr() {
   const v = ainput.value; const wasOpen = overlay === "addr";
   closeOverlay();
@@ -162,19 +165,7 @@ async function goAddr() {
   } else if (wasOpen) setHome(true);
 }
 let sugT: any;
-let sugSeq = 0;
-async function doSuggest() {
-  if (!searchSuggest) { sug.classList.remove("open"); return; }
-  const q2 = ainput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
-  const seq = ++sugSeq;
-  try {
-    const items: any[] = await invoke("search_suggest", { query: q2, engine: searchEngine });
-    if (seq !== sugSeq || ainput.value.trim() !== q2) return;
-    sug.innerHTML = "";
-    items.slice(0, 8).forEach(it => { const d = document.createElement("div"); d.className = "item"; d.textContent = it.label; d.onclick = () => { ainput.value = it.label; goAddr(); }; sug.appendChild(d); });
-    sug.classList.toggle("open", !!sug.innerHTML);
-  } catch { sug.classList.remove("open"); }
-}
+function doSuggest() { showLocalSuggest(ainput, v => { ainput.value = v; goAddr(); }); }
 
 /* ---- Tab lifecycle ---- */
 async function createTab(url?: string, silent?: boolean) {
@@ -671,7 +662,7 @@ function getDefault(): Settings {
     homepage: "about:blank", search_engine: searchEngine, ua_mode: desktopMode ? "Desktop" : "Mobile",
     custom_ua: "", adblock_enabled: adblockOn, clear_on_exit: incognitoMode, user_js: "",
     night_mode: nightMode, desktop_mode: desktopMode, text_size: textSize, show_images: showImages,
-    network_log: networkLog, search_suggest: searchSuggest, game_mode: gameMode, read_aloud_enabled: readAloud,
+    network_log: networkLog, search_suggest: false, game_mode: gameMode, read_aloud_enabled: readAloud,
     user_css: userCss, scripts, sites, pages_log: [],
   };
 }
@@ -911,7 +902,6 @@ async function openPanel(kind: string, arg?: string) {
       </div>
       <div class="setcat" id="cat-advanced" hidden>
         ${sw("netlog", "Network log", "Capture requests into the Network log panel", networkLog)}
-        ${sw("suggest", "Search suggestions", "Live suggestions while typing (extra network requests)", searchSuggest)}
         <div class="setrow"><div><div class="lbl">Custom CSS</div><div class="desc">Inject a style into every page</div></div></div>
         <textarea class="ptext" id="set-css" placeholder="body { }">${esc(userCss)}</textarea>
         <button class="pbtn primary" data-act="savecss">Apply CSS</button>
@@ -1153,10 +1143,6 @@ async function openPanel(kind: string, arg?: string) {
           networkLog = on; persistSettings({ network_log: on }); syncMenuUI();
           if (on && hasNavigated) invoke("eval_tab", { id: activeId!, js: "location.reload()" }).catch(()=>{});
           break;
-        case "suggest":
-          searchSuggest = on; persistSettings({ search_suggest: on }); syncMenuUI();
-          if (!on) sug.classList.remove("open");
-          break;
       }
       showToast("Saved");
     });
@@ -1225,6 +1211,18 @@ listen<{ id: number; url: string }>("tab-url", ev => {
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
 
+const DL_URL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma)([?#]|$)/i;
+function isDlUrl(u: string) { try { return !!new URL(u).pathname.match(DL_URL_RE); } catch { return false; } }
+function startDl(u: string) {
+  showToast("Downloading…");
+  invoke<string>("download_from_js", { url: u, filename: null })
+    .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
+    .catch((err: any) => {
+      console.error("[via] download failed:", err);
+      showToast("Download failed");
+    });
+}
+
 // target="_blank" / window.open links: WebView2 asks for a new native window.
 // Rust denies that OS window and forwards the URL here so we open a real tab
 // in THIS window instead. Download links routed this way still trigger the
@@ -1232,11 +1230,15 @@ listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x
 listen<{ url: string }>("new-window-request", async ev => {
   const u = ev.payload?.url;
   if (!u || u.startsWith("about:")) return;
-  if (u.startsWith("blob:") || u.startsWith("data:")) {
+  // Files opened via target="_blank" are downloads: brute-force them straight
+  // to the OS Downloads folder instead of opening a (blank) tab. blob/data
+  // URLs are page-local and usually already fired via <a download>.
+  if (u.startsWith("blob:") || u.startsWith("data:") || isDlUrl(u)) {
     // Page-local blob/data URLs can't be re-opened in another webview;
     // sites that produce them use <a download> so the download already
     // fired inside the page. Nothing to open here.
-    console.log("[via] ignoring page-local new-window URL:", u.slice(0, 64));
+    if (isDlUrl(u)) startDl(u);
+    else console.log("[via] ignoring page-local new-window URL:", u.slice(0, 64));
     return;
   }
   try {
@@ -1298,7 +1300,6 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
   try { arr = JSON.parse(ev.payload.msg); } catch { return; }
   const [action, data] = arr;
   if (action === "download" && data?.url) {
-    showToast("Downloading…");
     invoke<string>("download_from_js", { url: data.url, filename: data?.filename || null })
       .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
       .catch((err: any) => {
@@ -1335,7 +1336,6 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
     const s: Settings = await invoke("get_settings");
     searchEngine = s.search_engine; nightMode = s.night_mode; desktopMode = s.desktop_mode;
     textSize = s.text_size || 1; showImages = s.show_images !== false; networkLog = !!s.network_log;
-    searchSuggest = s.search_suggest !== false; // SERP suggestions off unless enabled
     gameMode = !!s.game_mode; readAloud = !!s.read_aloud_enabled; adblockOn = s.adblock_enabled !== false;
     scripts = s.scripts || []; sites = s.sites || []; userCss = s.user_css || "";
   } catch {}

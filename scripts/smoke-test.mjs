@@ -43,11 +43,17 @@ const results = [];
 for (const id of ["m-down", "m-bkm", "m-hist", "m-settings"]) {
   await openPanel(id);
   const panel = document.getElementById("panel");
+  const pcs = panel ? panel.querySelectorAll(".pc") : [];
+  const pc = panel ? panel.querySelector(".pc") : null;
+  const pb = panel ? panel.querySelector(".pb") : null;
   results.push({
     id, opened: !!panel,
     page: !!(panel && panel.classList.contains("pg")),
     title: panel ? (panel.querySelector(".ph b") || {}).textContent : null,
-    hasContent: panel ? panel.querySelector(".pb").children.length > 0 : false,
+    hasContent: panel ? pb.children.length > 0 : false,
+    // Visibility guard: exactly ONE .pc (no nested wrapper). That single .pc
+    // must carry .on (slide-in transform), otherwise content sits off-screen.
+    singlePcVisible: pcs.length === 1 && !!pc && pc.classList.contains("on"),
   });
   // close via back button
   const back = panel && panel.querySelector("#p-close");
@@ -73,6 +79,10 @@ results.push({ id: "m-textsize", opened: !!tsPanel, range: !!tsPanel?.querySelec
 
 console.log(JSON.stringify(results, null, 2));
 const fails = results.filter(r => r.opened === false || r.closes === false || (r.id === "settings-custom-tab" && (!r.customVisible || !r.nightSwitch)) || (r.id === "m-textsize" && !r.range));
+if (results.some(r => r.singlePcVisible === false && r.opened)) {
+  console.error("FAIL: panel .pc nesting/visibility guard", JSON.stringify(results));
+  process.exit(1);
+}
 if (fails.length) { console.error("FAIL:", JSON.stringify(fails)); process.exit(1); }
 console.log("SMOKE TEST PASSED");
 process.exit(0);

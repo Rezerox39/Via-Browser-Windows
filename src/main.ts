@@ -281,6 +281,9 @@ function buildMenuUI() {
         console.error("[via] menu action failed:", m.id, err);
         showToast("Error loading panel");
         try { closePanel(); } catch {}
+        // Restore the browser instead of leaving a black void after a failure.
+        showActiveWebview();
+        if (!hasNavigated) setHome(true);
       }
     };
     menuGrid.appendChild(d);
@@ -816,13 +819,12 @@ function panelHTML(title: string, body: string, page = false): string {
   const ph = page
     ? `<div class="ph"><button class="close" id="p-close" title="Back">‹</button><b>${title}</b><span style="width:34px"></span></div>`
     : `<div class="ph"><span class="grip"></span><b>${title}</b><button class="close" id="p-close">✕</button></div>`;
-  // NOTE: returns only the panel-shell (.ph/.pb), NOT a #panel wrapper.
-  // openPanel() creates the outer <div id="panel"> ("body") and copies this
-  // shell into it, so the document never has duplicate #panel ids.
-  return `<div class="${page ? "pg " : ""}pc">
-    ${ph}
-    <div class="pb">${body}</div>
-  </div>`;
+  // IMPORTANT: returns only the .ph/.pb shell, NOT a .pc wrapper.
+  // openPanel() creates a single <div class="pc"> ("p") and injects this
+  // shell into it. If panelHTML wrapped the shell in another .pc, the CSS
+  // #panel .pc { transform: translateX(100%) } would hide BOTH copies and the
+  // inner one (which holds the content) could never slide in -> blank screen.
+  return `${ph}<div class="pb">${body}</div>`;
 }
 function closePanel() {
   const p = q("panel"); if (p) p.remove();
@@ -832,7 +834,9 @@ function closePanel() {
 async function openPanel(kind: string, arg?: string) {
   closePanel();
   overlay = "panel"; panelKind = kind;
-  await hideActiveWebview();
+  // Do NOT hide the native webview here: if panel rendering below throws,
+  // the user would be stuck on a black void. Hide only after the DOM has
+  // appended and all bindings succeeded (end of the try block).
   const body = document.createElement("div"); body.id = "panel";
   const page = ["bookmarks", "history", "downloads", "settings"].includes(kind);
   if (page) body.className = "pg";
@@ -842,6 +846,7 @@ async function openPanel(kind: string, arg?: string) {
 
   const mkBtn = (label: string, act: () => void) => { const b = document.createElement("button"); b.className = "pbtn"; b.textContent = label; b.onclick = act; return b; };
 
+  try {
   if (kind === "bookmarks") {
     title = "Bookmarks";
     bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
@@ -1166,6 +1171,20 @@ async function openPanel(kind: string, arg?: string) {
       persistSettings({ search_engine: searchEngine });
       showToast("Search engine: " + searchEngine);
     };
+  }
+
+  // Panel DOM is now fully appended and every binding succeeded — only now is
+  // it safe to hide the native webview so the HTML overlay is visible.
+  await hideActiveWebview();
+  } catch (err) {
+    // Recovery: never leave the user staring at a black void. Remove the
+    // half-built panel and reveal the webview/homepage again.
+    console.error("[via] panel render failed:", kind, err);
+    const failed = q("panel"); if (failed) failed.remove();
+    overlay = "none"; panelKind = null;
+    await showActiveWebview();
+    if (!hasNavigated) setHome(true);
+    showToast("Error loading panel");
   }
 
 }

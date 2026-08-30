@@ -139,11 +139,11 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 #menu .grid .item.on::after { content: ""; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
 /* ---------- Feature panels ---------- */
-#panel { position: absolute; inset: 0; z-index: 240; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; }
+#panel { position: absolute; inset: 0; z-index: 240; background: rgba(0,0,0,.55); display: flex; align-items: flex-end; justify-content: center; color: var(--white); }
 #panel .pc {
   width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-bottom: none;
   border-radius: 18px 18px 0 0; padding: 12px 14px 24px; max-height: 82vh; display: flex; flex-direction: column;
-  transform: translateY(110%); transition: transform .2s ease;
+  transform: translateY(110%); transition: transform .2s ease; color: var(--white);
 }
 #panel .pc.on { transform: translateY(0); }
 #panel .ph { display: flex; align-items: center; gap: 12px; padding: 6px 4px 12px; }

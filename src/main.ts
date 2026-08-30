@@ -110,10 +110,15 @@ function locationIt() { const t = tabs.find(x => x.id === activeId); return t &&
 
 /* ---- Overlays ---- */
 let pillSugT: any;
+let pillSugSeq = 0;
 async function pillSuggest() {
-  const q2 = pillInput.value.trim(); if (!q2) { return; }
+  const q2 = pillInput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
+  const seq = ++pillSugSeq;
   try {
     const items: any[] = await invoke("search_suggest", { query: q2, engine: searchEngine });
+    // Drop out-of-order responses: if the user typed something newer while
+    // this request was in flight, ignore it (prevents suggestion flicker).
+    if (seq !== pillSugSeq || pillInput.value.trim() !== q2) return;
     // Show suggestions inside the address overlay for the homepage input too.
     if (items.length) {
       sug.innerHTML = "";
@@ -154,10 +159,13 @@ async function goAddr() {
   } else if (wasOpen) setHome(true);
 }
 let sugT: any;
+let sugSeq = 0;
 async function doSuggest() {
-  const q2 = ainput.value.trim(); if (!q2) { sug.classList.remove("open"); return; }
+  const q2 = ainput.value.trim(); if (q2.length < 2) { sug.classList.remove("open"); return; }
+  const seq = ++sugSeq;
   try {
     const items: any[] = await invoke("search_suggest", { query: q2, engine: searchEngine });
+    if (seq !== sugSeq || ainput.value.trim() !== q2) return;
     sug.innerHTML = "";
     items.slice(0, 8).forEach(it => { const d = document.createElement("div"); d.className = "item"; d.textContent = it.label; d.onclick = () => { ainput.value = it.label; goAddr(); }; sug.appendChild(d); });
     sug.classList.toggle("open", !!sug.innerHTML);
@@ -322,10 +330,10 @@ pillInput.onkeydown = (e: KeyboardEvent) => {
     }
   }
 };
-pillInput.oninput = () => { clearTimeout(pillSugT); pillSugT = setTimeout(pillSuggest, 250); };
+pillInput.oninput = () => { clearTimeout(pillSugT); pillSugT = setTimeout(pillSuggest, 300); };
 acancel.onclick = closeOverlay;
 ainput.onkeydown = (e: KeyboardEvent) => { if (e.key === "Enter") goAddr(); if (e.key === "Escape") closeOverlay(); };
-ainput.oninput = () => { clearTimeout(sugT); sugT = setTimeout(doSuggest, 250); };
+ainput.oninput = () => { clearTimeout(sugT); sugT = setTimeout(doSuggest, 300); };
 tabsEl.onclick = (e: any) => { if (e.target === tabsEl) closeOverlay(); };
 menuEl.onclick = (e: any) => { if (e.target === menuEl) closeOverlay(); };
 nb.onclick = goBack;
@@ -1207,6 +1215,34 @@ listen<{ id: number; url: string }>("tab-url", ev => {
   if (restoreTabs) saveSession();
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
+
+// target="_blank" / window.open links: WebView2 asks for a new native window.
+// Rust denies that OS window and forwards the URL here so we open a real tab
+// in THIS window instead. Download links routed this way still trigger the
+// active tab's on_download handler (toast + progress + save-to-Downloads).
+listen<{ url: string }>("new-window-request", async ev => {
+  const u = ev.payload?.url;
+  if (!u || u.startsWith("about:")) return;
+  if (u.startsWith("blob:") || u.startsWith("data:")) {
+    // Page-local blob/data URLs can't be re-opened in another webview;
+    // sites that produce them use <a download> so the download already
+    // fired inside the page. Nothing to open here.
+    console.log("[via] ignoring page-local new-window URL:", u.slice(0, 64));
+    return;
+  }
+  try {
+    await createTab(u, true); // hidden webview created and loading u
+    hasNavigated = true;
+    setHome(false);
+    stage.style.display = "block";
+    await showActiveWebview();
+    renderTabGrid();
+    console.log("[via] target=_blank opened in new tab:", u);
+  } catch (err) {
+    console.error("[via] new-window-request failed:", u, err);
+    showToast("Could not open link");
+  }
+});
 
 // "Download started" toast + HEAD probe the moment WebView2 requests a file.
 listen<{ id: number | null; url: string; path: string }>("download-started", ev => {

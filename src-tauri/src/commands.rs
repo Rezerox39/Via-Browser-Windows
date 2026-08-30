@@ -431,6 +431,19 @@ pub async fn create_tab(
                 return false;
             }
             true
+        })
+        .on_new_window(move |url, _features| {
+            // Websites open download links (and many pages) with
+            // `target="_blank"`. WebView2 turns that into a new-window request;
+            // with no handler wry silently swallows it (SetHandled(true)), so
+            // the click does nothing. Route it to a new tab in THIS window and
+            // deny the native OS window. The destination tab's own `on_download`
+            // will then save the file and surface progress/toasts.
+            let _ = app
+                .get_webview_window("main")
+                .map(|win| win.emit("new-window-request", serde_json::json!({ "url": url.to_string() })));
+            println!("[via] NEW-WINDOW REQUIRED (target=_blank): {url}");
+            tauri::webview::NewWindowResponse::Deny
         });
 
     if let Some(ua) = settings::resolve_ua(&s) {

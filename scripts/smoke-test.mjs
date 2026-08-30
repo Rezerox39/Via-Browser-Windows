@@ -91,7 +91,7 @@ if (results.some(r => r.singlePcVisible === false && r.opened)) {
 // The frontend must be wired to Rust's download IPC, otherwise downloads never
 // surface as a toast or in the panel. These are registered via the event
 // plugin at startup, so assert the bundle subscribed to them.
-for (const ev of ["download-started", "download-progress", "tab-url"]) {
+for (const ev of ["download-started", "download-progress", "new-window-request", "tab-url"]) {
   if (!registeredEvents.has(ev)) {
     console.error(`FAIL: frontend has no "${ev}" IPC listener; download chain is disconnected`);
     process.exit(1);

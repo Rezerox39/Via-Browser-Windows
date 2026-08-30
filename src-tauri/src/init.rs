@@ -156,22 +156,14 @@ pub fn build(s: &Settings) -> String {
     window.__viaSniff = function () {{ try {{ scan(); }} catch (e) {{}} return window.__viaMedia.slice(); }};
   }})();
 
-  // ---- Download-link capture (EVERY file link, incl. target=_blank) ----
-  // WebView2's native DownloadStarting + new-window interception is unreliable
-  // on Windows. Like a standard browser, we intercept every click on a link
-  // that points to a file extension (regardless of the download attribute or
-  // target="_blank") and stream the file straight to the OS Downloads folder.
-  // Two routes:
-  //  - http(s) links: the host streams via reqwest (download_from_js).
-  //  - blob:/data: links are page-local, Rust can't fetch them, so the page
-  //    reads the bytes itself and hands them to the host (save_blob_download).
-  var DL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
-  function viaFilename(href) {{
-    try {{
-      var p = href.split(/[?#]/)[0].split("/");
-      return decodeURIComponent(p[p.length - 1] || "");
-    }} catch (e) {{ return ""; }}
-  }}
+  // ---- Page-local blob/data download capture ----
+  // Standard browsing relies on WebView2 reading the server's HTTP headers to
+  // tell a real download (Content-Disposition: attachment) from a page; we
+  // must NOT guess from a hardcoded list of file extensions. So http(s) links
+  // are left entirely alone for the native engine to handle. The only things
+  // we intercept here are page-local blob:/data: URIs, because WebView2 cannot
+  // download those directly: the page reads the bytes itself and hands them to
+  // the host (save_blob_download) to save into the OS Downloads folder.
   function viaBlobDesc(extra) {{
     var s = (extra || "").trim();
     if (s.indexOf(".") > 0) s = s.slice(0, s.lastIndexOf("."));
@@ -210,45 +202,50 @@ pub fn build(s: &Settings) -> String {
     }}
     return "";
   }}
+  function viaBlobName(dl, u) {{
+    if (dl && dl.indexOf(".") > 0) return dl;
+    if (dl && dl.trim()) return dl;
+    try {{
+      var p = u.split(/[?#]/)[0].split("/");
+      return decodeURIComponent(p[p.length - 1] || "");
+    }} catch (e) {{ return ""; }}
+  }}
   document.addEventListener("click", function (e) {{
     try {{
       if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       var a = e.target && e.target.closest ? e.target.closest("a[href]") : null;
       if (!a) return;
       var href = a.getAttribute("href") || "";
-      var isBlob = href.indexOf("blob:") === 0 || href.indexOf("data:") === 0;
-      var isFile = DL_RE.test(href);
-      var dlAttr = a.hasAttribute("download") && a.getAttribute("download") !== "false";
-      if (!isBlob && !isFile && !dlAttr) return;
+      if (href.indexOf("blob:") !== 0 && href.indexOf("data:") !== 0) return;
       e.preventDefault();
       e.stopPropagation();
       var u = new URL(href, location.href).href;
-      if (isBlob) {{
-        try {{
-          fetch(u).then(function (r) {{ return r.blob(); }}).then(function (b) {{
-            try {{
-              var fr = new FileReader();
-              fr.onload = function () {{
-                try {{
-                  var dd = fr.result || "";
-                  var idx = dd.indexOf(",");
-                  var base = viaBlobDesc(a.getAttribute("download") || viaFilename(u)) + viaBlobExt(b.type || "");
-                  window.__viaSend("saveBlob", {{
-                    url: u,
-                    filename: base.split("/").pop(),
-                    bytes: idx >= 0 ? dd.slice(idx + 1) : ""
-                  }});
-                }} catch (e3) {{}}
-              }};
-              fr.readAsDataURL(b);
-            }} catch (e3) {{}}
-          }}).catch(function () {{}});
-        }} catch (e2) {{}}
-        return;
-      }}
-      window.__viaSend("startDl", {{ url: u, filename: viaFilename(u) }});
+      try {{
+        fetch(u).then(function (r) {{ return r.blob(); }}).then(function (b) {{
+          try {{
+            var fr = new FileReader();
+            fr.onload = function () {{
+              try {{
+                var dd = fr.result || "";
+                var idx = dd.indexOf(",");
+                var nm = viaBlobName(a.getAttribute("download") || "", u);
+                if (!nm) nm = "download-" + Date.now();
+                var bext = viaBlobExt(b.type || "");
+                if (bext && nm.indexOf(".") < 0) nm = nm + bext;
+                window.__viaSend("saveBlob", {{
+                  url: u,
+                  filename: nm.split("/").pop(),
+                  bytes: idx >= 0 ? dd.slice(idx + 1) : ""
+                }});
+              }} catch (e3) {{}}
+            }};
+            fr.readAsDataURL(b);
+          }} catch (e3) {{}}
+        }}).catch(function () {{}});
+      }} catch (e2) {{}}
     }} catch (err) {{}}
   }}, true);
+
 
 
   // ---- User scripts ----

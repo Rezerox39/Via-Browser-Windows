@@ -439,15 +439,31 @@ pub async fn create_tab(
         })
         .on_new_window(move |url, _features| {
             // Websites open download links (and many pages) with
-            // `target="_blank"`. WebView2 turns that into a new-window request;
-            // with no handler wry silently swallows it (SetHandled(true)), so
-            // the click does nothing. Route it to a new tab in THIS window and
-            // deny the native OS window. The destination tab's own `on_download`
-            // will then save the file and surface progress/toasts.
-            let _ = app
-                .get_webview_window("main")
-                .map(|win| win.emit("new-window-request", serde_json::json!({ "url": url.to_string() })));
-            println!("[via] NEW-WINDOW REQUIRED (target=_blank): {url}");
+            // `target="_blank"`. WebView2 turns that into a new-window request.
+            // Letting WebView2 read the HTTP headers is the CORRECT way to tell
+            // a real download (Content-Disposition: attachment) from a page:
+            // no extension guessing. So we navigate the ACTIVE tab here and deny
+            // the native OS window. If it's a file, WebView2 cancels the visual
+            // navigation and fires on_download (which saves + emits progress).
+            // If it's a real page, it just loads in the active tab.
+            let active = app.state::<BrowserState>().active.lock().unwrap().clone();
+            let label = active
+                .and_then(|id| app.state::<BrowserState>().tabs.lock().unwrap().get(&id).cloned());
+            let nav_url = url.clone();
+            match label {
+                Some(label) => {
+                    if let Some(wv) = app.get_webview(&label) {
+                        println!("[via] target=_blank -> active tab: {nav_url}");
+                        let _ = wv.navigate(nav_url);
+                    }
+                }
+                None => {
+                    // No active tab yet: surface to the frontend, which creates one.
+                    let _ = app
+                        .get_webview_window("main")
+                        .map(|win| win.emit("new-window-request", serde_json::json!({ "url": nav_url.to_string() })));
+                }
+            }
             tauri::webview::NewWindowResponse::Deny
         });
 

@@ -1211,8 +1211,6 @@ listen<{ id: number; url: string }>("tab-url", ev => {
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
 
-const DL_URL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
-function isDlUrl(u: string) { try { return !!new URL(u).pathname.match(DL_URL_RE); } catch { return false; } }
 function startDl(u: string, filename: string | null = null) {
   showToast("Downloading…");
   invoke<string>("download_from_js", { url: u, filename: filename || null })
@@ -1223,24 +1221,14 @@ function startDl(u: string, filename: string | null = null) {
     });
 }
 
-// target="_blank" / window.open links: WebView2 asks for a new native window.
-// Rust denies that OS window and forwards the URL here so we open a real tab
-// in THIS window instead. Download links routed this way still trigger the
-// active tab's on_download handler (toast + progress + save-to-Downloads).
+// target="_blank" / window.open fallback: Rust normally reroutes these into
+// the ACTIVE tab's native webview so WebView2 can read the HTTP headers and
+// route real downloads (Content-Disposition) to on_download itself. This event
+// only fires when there is no active tab yet — in that case we open a real tab.
+// No extension guessing here: the native engine decides what is a download.
 listen<{ url: string }>("new-window-request", async ev => {
   const u = ev.payload?.url;
   if (!u || u.startsWith("about:")) return;
-  // Files opened via target="_blank" are downloads: brute-force them straight
-  // to the OS Downloads folder instead of opening a (blank) tab. blob/data
-  // URLs are page-local and usually already fired via <a download>.
-  if (u.startsWith("blob:") || u.startsWith("data:") || isDlUrl(u)) {
-    // Page-local blob/data URLs can't be re-opened in another webview;
-    // sites that produce them use <a download> so the download already
-    // fired inside the page. Nothing to open here.
-    if (isDlUrl(u)) startDl(u);
-    else console.log("[via] ignoring page-local new-window URL:", u.slice(0, 64));
-    return;
-  }
   try {
     await createTab(u, true); // hidden webview created and loading u
     hasNavigated = true;

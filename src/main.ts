@@ -311,10 +311,10 @@ pillInput.onkeydown = (e: KeyboardEvent) => {
     }
   }
 };
-pillInput.oninput = () => { clearTimeout(pillSugT); pillSugT = setTimeout(pillSuggest, 200); };
+pillInput.oninput = () => { clearTimeout(pillSugT); pillSugT = setTimeout(pillSuggest, 250); };
 acancel.onclick = closeOverlay;
 ainput.onkeydown = (e: KeyboardEvent) => { if (e.key === "Enter") goAddr(); if (e.key === "Escape") closeOverlay(); };
-ainput.oninput = () => { clearTimeout(sugT); sugT = setTimeout(doSuggest, 200); };
+ainput.oninput = () => { clearTimeout(sugT); sugT = setTimeout(doSuggest, 250); };
 tabsEl.onclick = (e: any) => { if (e.target === tabsEl) closeOverlay(); };
 menuEl.onclick = (e: any) => { if (e.target === menuEl) closeOverlay(); };
 nb.onclick = goBack;
@@ -1059,6 +1059,15 @@ listen<{ id: number; url: string }>("tab-url", ev => {
 });
 listen<{ id: number; title: string }>("tab-title", ev => { const t = tabs.find(x => x.id === ev.payload.id); if (t) { t.title = ev.payload.title; renderTabGrid(); } });
 
+// "Download started" toast + HEAD probe the moment WebView2 requests a file.
+listen<{ id: number | null; url: string; path: string }>("download-started", ev => {
+  const d = ev.payload;
+  showToast("Download started…");
+  if (d.url.startsWith("http")) {
+    evalInActive(`fetch(${JSON.stringify(d.url)},{method:'HEAD',cache:'no-store'}).then(function(r){var l=+r.headers.get('content-length');if(l>0)window.__viaSend('dlTotal',{url:${JSON.stringify(d.url)},len:l});}).catch(function(){})`).catch(()=>{});
+  }
+});
+
 // Native WebView2 download events (Requested/Finished) from Rust.
 listen<{ id: number | null; url: string; path: string; done: boolean; success?: boolean }>("download-progress", ev => {
   const d = ev.payload;
@@ -1068,13 +1077,6 @@ listen<{ id: number | null; url: string; path: string; done: boolean; success?: 
     if (d.success !== undefined) existing.success = d.success;
   } else {
     activeDl.push({ url: d.url, path: d.path, received: 0, total: 0, done: !!d.done, success: d.success });
-    // "Download started" toast the moment a new download is requested.
-    showToast("Download started…");
-    // Best-effort total via a same-origin HEAD probe from the active tab
-    // (cross-origin falls back to the indeterminate bar).
-    if (d.url.startsWith("http") && !d.done) {
-      evalInActive(`fetch(${JSON.stringify(d.url)},{method:'HEAD',cache:'no-store'}).then(function(r){var l=+r.headers.get('content-length');if(l>0)window.__viaSend('dlTotal',{url:${JSON.stringify(d.url)},len:l});}).catch(function(){})`).catch(()=>{});
-    }
   }
   if (d.done) showToast(d.success === false ? "Download failed" : "Download complete");
   if (overlay === "panel") refreshDownloadRows();

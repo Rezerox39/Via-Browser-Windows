@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{
-    webview::DownloadEvent, Emitter, LogicalPosition, LogicalSize, Manager, Url, WebviewBuilder,
+    webview::DownloadEvent, Emitter, Manager, Url, WebviewBuilder,
 };
 
 use crate::adblock;
@@ -43,37 +43,46 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
 
-fn tab_bounds(app: &tauri::AppHandle) -> Option<(LogicalPosition<f64>, LogicalSize<f64>)> {
-    // Never panic: a transiently-unavailable window (e.g. during fullscreen
-    // transition or teardown) should just yield None so resize is skipped.
+/// Compute the target bounds for every tab webview in *logical* pixels.
+///
+/// The HTML bottom nav bar is 60 CSS px tall, which is already a logical
+/// unit: on high-DPI Windows the runtime converts logical -> physical via the
+/// window's scale factor, so subtracting 60 here is DPI-correct (no gap, no
+/// overlap). Returns `None` only when the window is transiently unavailable
+/// (e.g. during fullscreen transition or teardown) so resize is skipped.
+fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
     let wvwin = app.get_webview_window("main")?;
-    let size = wvwin.inner_size().ok()?;
-    if size.width == 0 || size.height == 0 {
+    let physical = wvwin.inner_size().ok()?;
+    if physical.width == 0 || physical.height == 0 {
         return None;
     }
-    let fullscreen = wvwin.is_fullscreen().unwrap_or(false);
-    let width = size.width as f64;
+    let scale = wvwin.scale_factor().unwrap_or(1.0);
+    let width = physical.width as f64 / scale;
+    let height = physical.height as f64 / scale;
     // In fullscreen the OS bottom nav bar is hidden, so the webview may fill
     // the whole window. Otherwise it must stop above the HTML bottom bar.
-    let height = if fullscreen {
-        size.height as f64
+    let h = if wvwin.is_fullscreen().unwrap_or(false) {
+        height
     } else {
-        (size.height.saturating_sub(NAV_HEIGHT as u32) as f64).max(320.0)
+        (height - NAV_HEIGHT).max(320.0)
     };
-    Some((LogicalPosition::new(0.0, 0.0), LogicalSize::new(width, height)))
+    Some(tauri::Rect {
+        position: tauri::LogicalPosition::new(0.0, 0.0).into(),
+        size: tauri::LogicalSize::new(width, h).into(),
+    })
 }
 
 /// Reposition/resize every tab webview after the window is resized or its
 /// scale factor changes (incl. fullscreen toggles). Safely no-ops if the
-/// window or a webview is unavailable.
+/// window or a webview is unavailable. Uses the atomic `set_bounds` so a tab
+/// webview can never end up with a stale width/height racing a move.
 pub fn relayout_tabs(app: &tauri::AppHandle) {
     let state = app.state::<BrowserState>();
     let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
-    let Some((pos, size)) = tab_bounds(app) else { return };
+    let Some(bounds) = tab_bounds(app) else { return };
     for l in labels {
         if let Some(wv) = app.get_webview(&l) {
-            let _ = wv.set_position(pos);
-            let _ = wv.set_size(size);
+            let _ = wv.set_bounds(bounds);
         }
     }
 }
@@ -235,11 +244,15 @@ pub async fn create_tab(
     // user types a query/URL — we never auto-navigate to an external site.
     let target = url.unwrap_or_else(|| "about:blank".to_string());
     let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
-    let (pos, size) = tab_bounds(&app).ok_or_else(|| "window unavailable".to_string())?;
+    let bounds = tab_bounds(&app).ok_or_else(|| "window unavailable".to_string())?;
 
     let nav_settings = s.clone(); // captured by on_navigation (site overrides)
     let dl_label = label.clone();
+    // auto_resize keeps every child webview filling the window natively on
+    // resize (Tauri's runtime re-applies proportional bounds on each window
+    // resize); relayout_tabs() then corrects the fixed 60px nav offset.
     let mut builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(parsed.clone()))
+        .auto_resize()
         .initialization_script(init::build(&s))
         .on_download(move |wv, event| {
             let wv_app = wv.app_handle();
@@ -256,12 +269,29 @@ pub async fn create_tab(
                     let dir = wv_app.path().download_dir();
                     if let Ok(dir) = dir {
                         let _ = std::fs::create_dir_all(&dir);
+                        // Decode the real filename; fall back to a ?filename= /
+                        // ?file= / ?name= query param, then a timestamped name.
                         let fname = url
                             .path_segments()
                             .and_then(|segs| segs.last())
+                            .filter(|f| !f.is_empty())
+                            .and_then(|f| percent_decode(f))
                             .filter(|f| !f.is_empty() && f.len() < 128)
-                            .unwrap_or("download");
-                        let dest = dir.join(fname);
+                            .or_else(|| {
+                                url.query_pairs().find_map(|(k, v)| {
+                                    matches!(k.as_ref(), "filename" | "file" | "name" | "download")
+                                        .then(|| v.to_string())
+                                        .filter(|f| !f.is_empty() && f.len() < 128)
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                let ts = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0);
+                                format!("download-{ts}")
+                            });
+                        let dest = dir.join(&fname);
                         // If a file with that name exists, avoid clobbering.
                         let dest = if dest.exists() {
                             let stem = dest.file_stem().and_then(|f| f.to_str()).unwrap_or("download");
@@ -278,6 +308,9 @@ pub async fn create_tab(
                         };
                         *destination = dest.clone();
                         if let Some(win) = &win {
+                            let _ = win.emit("download-started", serde_json::json!({
+                                "id": id, "url": url.to_string(), "path": dest.to_string_lossy(),
+                            }));
                             let _ = win.emit("download-progress", serde_json::json!({
                                 "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
                             }));
@@ -357,7 +390,7 @@ pub async fn create_tab(
     }
 
     let webview = window
-        .add_child(builder, pos, size)
+        .add_child(builder, bounds.position, bounds.size)
         .map_err(|e| e.to_string())?;
     // Start hidden: the pure-black local homepage is shown until the user
     // navigates somewhere (the frontend calls show_tab on navigation).

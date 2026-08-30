@@ -15,7 +15,6 @@
     "core:event:allow-unlisten",
     "core:event:allow-emit",
     "dialog:default",
-    "notification:default",
     "fs:default",
     {
       "identifier": "fs:allow-write",

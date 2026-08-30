@@ -203,10 +203,52 @@ pub fn download_from_js(
     let _ = std::fs::create_dir_all(&download_dir);
 
     let parsed = url::Url::parse(&url).map_err(|e| e.to_string())?;
-    let fname = filename
-        .filter(|f| !f.trim().is_empty() && f.len() < 128)
+    let win = app.get_webview_window("main");
+    let emit = |name: &str, payload: serde_json::Value| {
+        if let Some(win) = &win {
+            let _ = win.emit(name, payload);
+        }
+    };
+
+    println!("[via] JS download: {url}");
+    // 2. HTTP GET via reqwest (rustls; no OpenSSL needed for cross-builds).
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("ViaBrowser/7.2.1")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .map_err(|e| format!("download client error: {e}"))?;
+    let resp = match client.get(&url).send() {
+        Ok(r) => r,
+        Err(e) => {
+            emit("download-progress", finished_payload(&url, &std::path::Path::new(&url), 0, 0, false));
+            return Err(format!("download request error: {e}"));
+        }
+    };
+    if !resp.status().is_success() {
+        let code = resp.status();
+        emit("download-progress", finished_payload(&url, &std::path::Path::new(&url), 0, 0, false));
+        return Err(format!("download failed: HTTP {code}"));
+    }
+    let total = resp.content_length().unwrap_or(0);
+
+    // Resolve the REAL filename. Prefer the response's Content-Disposition
+    // header (authoritative name + extension even after GitHub/AWS redirects),
+    // then an explicit filename arg, then the URL path segment.
+    let header_name = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| parse_content_disposition(h))
+        .filter(|f| !f.trim().is_empty() && f.len() < 256)
         .map(|f| sanitize(&f))
-        .filter(|f| !f.is_empty())
+        .filter(|f| !f.is_empty());
+    let fname = header_name
+        .or_else(|| {
+            filename
+                .filter(|f| !f.trim().is_empty() && f.len() < 128)
+                .map(|f| sanitize(&f))
+                .filter(|f| !f.is_empty())
+        })
         .or_else(|| {
             parsed
                 .path_segments()
@@ -220,39 +262,11 @@ pub fn download_from_js(
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            format!("download-{ts}")
+            format!("download-{ts}.zip")
         });
 
     let dest = download_dir.join(&fname);
     let _ = std::fs::remove_file(&dest); // fresh copy; no clobber logic needed for fallback
-
-    let win = app.get_webview_window("main");
-    let emit = |name: &str, payload: serde_json::Value| {
-        if let Some(win) = &win {
-            let _ = win.emit(name, payload);
-        }
-    };
-
-    println!("[via] JS download: {url} -> {}", dest.display());
-    // 2. HTTP GET via reqwest (rustls; no OpenSSL needed for cross-builds).
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("ViaBrowser/7.2.1")
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .build()
-        .map_err(|e| format!("download client error: {e}"))?;
-    let resp = match client.get(&url).send() {
-        Ok(r) => r,
-        Err(e) => {
-            emit("download-progress", finished_payload(&url, &dest, 0, 0, false));
-            return Err(format!("download request error: {e}"));
-        }
-    };
-    if !resp.status().is_success() {
-        let code = resp.status();
-        emit("download-progress", finished_payload(&url, &dest, 0, 0, false));
-        return Err(format!("download failed: HTTP {code}"));
-    }
-    let total = resp.content_length().unwrap_or(0);
 
     // 3. Accurate IPC start event: filename + Content-Length.
     emit("download-started", serde_json::json!({
@@ -363,6 +377,62 @@ fn finished_payload(url: &str, dest: &std::path::Path, received: u64, total: u64
         "id": null, "url": url, "path": dest.to_string_lossy(),
         "received": received, "total": total, "done": true, "success": success,
     })
+}
+
+/// Parse a Content-Disposition header value into its filename, supporting both
+/// `filename="x.zip"` and RFC 5987 `filename*=UTF-8''x.zip`.
+fn parse_content_disposition(header: &str) -> Option<String> {
+    if let Some(star) = header.find("filename*=") {
+        let after = &header[star + "filename*=".len()..];
+        if let Some(eq) = after.find("''") {
+            let cand = after[eq + 2..].trim_matches('"').trim();
+            let d = percent_decode(cand)?;
+            let d = d.trim().to_string();
+            if !d.is_empty() && d.len() < 256 { return Some(d); }
+        }
+    }
+    if let Some(pos) = header.find("filename=") {
+        let tail = &header[pos + "filename=".len()..];
+        let mut cand = tail.trim().to_string();
+        if cand.starts_with('"') {
+            cand = cand[1..].to_string();
+            cand = cand.split('"').next().unwrap_or("").into();
+        } else {
+            cand = cand.split(';').next().unwrap_or("").trim().into();
+        }
+        let d = percent_decode(cand.trim_matches('"').trim())?;
+        let d = d.trim().to_string();
+        if !d.is_empty() && d.len() < 256 { return Some(d); }
+    }
+    None
+}
+
+fn percent_decode(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_val(bytes[i + 1])?;
+                let lo = hex_val(bytes[i + 2])?;
+                out.push((hi << 4) | lo);
+                i += 3;
+            }
+            b'+' => { out.push(b' '); i += 1; }
+            b => { out.push(b); i += 1; }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn sanitize(s: &str) -> String {

@@ -8,7 +8,6 @@ use tauri::{
 use crate::adblock;
 use crate::init;
 use crate::settings::{self, Settings};
-use tauri_plugin_notification::NotificationExt;
 
 #[derive(Clone, Serialize)]
 pub struct SuggestItem {
@@ -309,19 +308,24 @@ pub async fn create_tab(
                         .unwrap_or_else(|_| std::env::temp_dir());
                     let _ = std::fs::create_dir_all(&dir);
                     // Decode the REAL filename. WebView2 reports the download URL
-                    // AFTER redirects (e.g. GitHub -> objects.githubusercontent.com
-                    // AWS bucket), so the path segment becomes a UUID hash and the
-                    // true name sits in query params like
-                    //   response-content-disposition=attachment;filename%3Dzmt.apk
-                    // Priority: response-content-disposition > filename/file/name/
-                    // download query params > URL path segment > safe fallback.
-                    let fname = real_filename(&url).unwrap_or_else(|| {
-                        let ts = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0);
-                        format!("download-{ts}.zip")
-                    });
+                    // AFTER redirects (e.g. GitHub -> codeload / AWS S3 bucket),
+                    // so the path segment often becomes a UUID hash or the real
+                    // name only exists in the HTTP Content-Disposition header.
+                    // Priority:
+                    //   1. Content-Disposition header from the actual response
+                    //      (the true source of truth, guarantees extension)
+                    //   2. response-content-disposition / filename= query params
+                    //   3. URL path segment (direct file URLs)
+                    //   4. fallback to a timestamped name
+                    let fname = probe_download_filename(&url)
+                        .or_else(|| real_filename(&url))
+                        .unwrap_or_else(|| {
+                            let ts = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            format!("download-{ts}.zip")
+                        });
                     let dest = dir.join(&fname);
                     // If a file with that name exists, avoid clobbering.
                     let dest = if dest.exists() {
@@ -347,10 +351,6 @@ pub async fn create_tab(
                             "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
                         }));
                     }
-                    let _ = wv_app.notification().builder()
-                        .title("Via Browser")
-                        .body(format!("Download started: {}", dest.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())))
-                        .show();
                 }
                 DownloadEvent::Finished { url, path, success } => {
                     println!("[via] DOWNLOAD FINISHED: {:?} success={}", url.to_string(), success);
@@ -360,7 +360,6 @@ pub async fn create_tab(
                             crate::features::record_download(&wv_app, &store, url.to_string(), p.clone());
                         }
                     }
-                    let file_name = path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
                     if let Some(win) = &win {
                         let _ = win.emit("download-progress", serde_json::json!({
                             "id": id, "url": url.to_string(),
@@ -368,14 +367,6 @@ pub async fn create_tab(
                             "received": 0, "total": 0, "done": true, "success": success,
                         }));
                     }
-                    let _ = wv_app.notification().builder()
-                        .title("Via Browser")
-                        .body(if success {
-                            format!("Download complete: {file_name}")
-                        } else {
-                            format!("Download failed: {file_name}")
-                        })
-                        .show();
                 }
                 _ => {}
             }
@@ -678,6 +669,75 @@ pub fn normalize_url(input: &str) -> String {
 ///   (or filename*=UTF-8''zmt.apk)
 /// Falls back to path segment, then common query keys. Returns None if nothing
 /// usable is found (e.g. a naked UUID hash without an extension).
+/// Probe the download URL's HTTP response and return the filename from the
+/// Content-Disposition header. This is the authoritative source for the real
+/// name + extension (e.g. GitHub -> codeload returns
+/// `attachment; filename=git-2.50.0.tar.gz` when the URL has no extension).
+/// Fails gracefully (returns None) so the caller falls back to URL parsing.
+fn probe_download_filename(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .user_agent("ViaBrowser/7.2.1")
+        .build()
+        .ok()?;
+    // HEAD first; fall back to GET if HEAD is refused (405/403) or the
+    // response has no useful Content-Disposition.
+    let mut resp = client.head(url.as_str()).send().ok()?;
+    let mut header = resp
+        .headers()
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    if !resp.status().is_success() || header.is_empty() {
+        if let Ok(get_resp) = client.get(url.as_str()).send() {
+            resp = get_resp;
+            header = resp
+                .headers()
+                .get("content-disposition")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim().to_string())
+                .unwrap_or_default();
+        }
+    }
+    parse_content_disposition(&header)
+}
+
+/// Parse a Content-Disposition header value into its filename, supporting both
+/// `filename="x.zip"` and RFC 5987 `filename*=UTF-8''x.zip`.
+fn parse_content_disposition(header: &str) -> Option<String> {
+    // filename*=UTF-8''...
+    if let Some(star) = header.find("filename*=") {
+        let after = &header[star + "filename*=".len()..];
+        if let Some(eq) = after.find("''") {
+            let cand = after[eq + 2..].trim_matches('"').trim();
+            if let Some(d) = percent_decode(cand) {
+                let d = d.trim().to_string();
+                if !d.is_empty() && d.len() < 256 { return Some(d); }
+            }
+        }
+    }
+    // filename="x" or filename=x (single token up to ';')
+    if let Some(pos) = header.find("filename=") {
+        let tail = &header[pos + "filename=".len()..];
+        let mut cand = tail.trim().to_string();
+        if cand.starts_with('"') {
+            cand = cand[1..].to_string();
+            cand = cand.split('"').next().unwrap_or("").into();
+        } else {
+            cand = cand.split(';').next().unwrap_or("").trim().into();
+        }
+        if let Some(d) = percent_decode(cand.trim_matches('"').trim()) {
+            let d = d.trim().to_string();
+            if !d.is_empty() && d.len() < 256 { return Some(d); }
+        }
+    }
+    None
+}
+
 fn real_filename(url: &Url) -> Option<String> {
     // 1) Content-Disposition query param (AWS S3 / GitHub / Google Drive style).
     for (k, v) in url.query_pairs() {

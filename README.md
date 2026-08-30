@@ -1,13 +1,14 @@
 # Via Browser for Windows
 
-A lightweight, minimalist desktop web browser for Windows, rebuilt from the spirit of
+A desktop web browser for Windows, rebuilt from the spirit of
 **Via Browser 7.2.1** (Android, `mark.via.gp`). This is **not a conversion of the APK** — Android
-apps can't be turned into native Windows executables. Instead it's a faithful, ultra-light
-re-implementation using **Tauri 2 + Rust + WebView2**, matching Via's core philosophy:
-a tiny binary that uses the OS's native web engine rather than bundling a heavy Chromium.
+apps can't be turned into native Windows executables. Instead it's a faithful re-implementation
+using **Tauri 2 + Rust + WebView2**, matching Via's philosophy of a lean app that uses the OS's
+native web engine rather than bundling a heavy Chromium.
 
-Because it reuses Windows' built-in **WebView2** (preinstalled on Windows 10/11), the whole app
-is only ~3 MB and uses far less RAM than Electron-based browsers.
+> **Constraint update:** the earlier "under 5 MB" limit has been lifted. The new priority is
+> absolute feature perfection and a flawless 1:1 UI/UX with the Android app. Heavy assets,
+> full libraries and complete UI pages are welcome — no size-driven shortcuts.
 
 ## Why a port, not a converter
 
@@ -62,14 +63,22 @@ is only ~3 MB and uses far less RAM than Electron-based browsers.
 - **Night mode** — full-window color inversion like Via on Android.
 - **Desktop / Mobile / Via UA** — quick User-Agent switch + reload.
 - **Downloads** — WebView2 downloads are intercepted in Rust, saved to the OS
-  Downloads folder (with auto-collision handling), and surfaced in a Downloads
-  panel: a "Download started" toast, live byte count, real progress bar (a
-  same-origin HEAD probe supplies the total; otherwise an animated bar), green
-  Completed / red Failed states, and click-to-open. Saved pages land here too.
-- **Settings** — full categorized page (General / Customization / Privacy /
-  Advanced / Scripts / About) with instant switches: search engine, Restore
-  tabs on startup (reopens last session), Clear data on exit (Incognito),
-  Night mode, Show images, Ad blocking, Network log, custom CSS, and more.
+  Downloads folder (with auto-collision handling), and surfaced in a **full-screen
+  Downloads page**: category filters (All / Archives / APK / Video / Documents /
+  Images / Audio / Other) with live counts, a "Download started" toast, live byte
+  count, real progress bar (a same-origin HEAD probe supplies the total; otherwise
+  an animated bar), green Completed / red Failed states, click-to-open and
+  reveal-in-folder (↗). Saved pages land here too.
+- **Settings** — dedicated full-screen categorized page (General /
+  Customization / Privacy / Advanced / Scripts / About) with instant switches:
+  search engine, Restore tabs on startup (reopens last session), Clear data on
+  exit (Incognito), Night mode, Show images, Ad blocking, Network log, custom
+  CSS, and more — plus **Export/Import .via backups** of bookmarks, history,
+  settings and scripts.
+- **Bookmarks & History** — dedicated full-screen pages with live search,
+  click-to-open navigation, and clear-history.
+- **Backup (.via)** — one-click export writes `via-backup-<ts>.via` to your
+  Downloads folder; import restores the newest backup found there.
 - **Privacy** — clear cache & history, Incognito (no history + auto-clear on
   exit), and a cookie inspector.
 - **Persistence** — bookmarks, history, downloads/saved pages, scripts,

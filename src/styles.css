@@ -196,3 +196,39 @@ body { font-family: "Segoe UI", system-ui, sans-serif; background: var(--black);
 #panel .settab.on { background: var(--panel-2); color: var(--white); border-color: var(--line); }
 #panel .setcat[hidden] { display: none; }
 #panel .prow.clickable { cursor: pointer; }
+
+/* ---------- Full-screen dedicated pages ---------- */
+#panel.pg { background: #000; }
+#panel.pg .pc {
+  width: 100%; max-width: 100%; height: 100%; max-height: 100%;
+  border: none; border-radius: 0; padding: 0;
+  transform: translateX(100%);
+  transition: transform .22s ease-in-out;
+  background: var(--black);
+}
+#panel.pg .pc.on { transform: translateX(0); }
+#panel.pg .pc.out { transform: translateX(100%); }
+#panel.pg .ph {
+  padding: 12px 12px 14px; border-bottom: 1px solid var(--line);
+  background: #050505;
+}
+#panel.pg .ph b { font-size: 17px; flex: 1; }
+#panel.pg .ph .close { color: var(--white); font-size: 22px; line-height: 1; padding: 6px 10px 6px 6px; cursor: pointer; border: none; background: none; }
+#panel.pg .pb { flex: 1; padding: 12px 14px 30px; }
+
+/* ---------- Downloads categories ---------- */
+#dl-cats { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+#dl-cats .dl-cat {
+  border: 1px solid var(--line); background: transparent; color: var(--gray);
+  border-radius: 18px; padding: 7px 13px; font-size: 12px; cursor: pointer;
+  display: flex; align-items: center; gap: 6px;
+}
+#dl-cats .dl-cat .cnt { font-size: 10px; background: var(--panel-2); border-radius: 9px; padding: 1px 6px; color: var(--gray); }
+#dl-cats .dl-cat.on { background: var(--accent); border-color: transparent; color: #000; font-weight: 600; }
+#dl-cats .dl-cat.on .cnt { background: rgba(0,0,0,.18); color: #000; }
+#panel .dmeta { align-items: center; }
+#panel .dmeta .dopen {
+  border: none; background: none; color: var(--gray); cursor: pointer;
+  font-size: 15px; padding: 2px 4px; line-height: 1;
+}
+#panel .dmeta .dopen:hover { color: var(--white); }

@@ -91,6 +91,10 @@ pub fn run() {
             features::open_external,
             features::file_size,
             features::open_download,
+            features::reveal_download,
+            features::export_backup,
+            features::import_backup,
+            features::import_latest_backup,
             reader::reader_bundle,
             reader::reader_close,
         ])

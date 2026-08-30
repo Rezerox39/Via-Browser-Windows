@@ -351,3 +351,90 @@ pub fn open_download(app: tauri::AppHandle, path: String) -> Result<(), String> 
     use tauri_plugin_opener::OpenerExt;
     app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub fn reveal_download(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().reveal_item_in_dir(path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn export_backup(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, StoreState>,
+    sstate: tauri::State<'_, crate::commands::SettingsState>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&dir);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("via-backup-{ts}.via"));
+    let store = store.0.lock().unwrap().clone();
+    let settings = sstate.0.lock().unwrap().clone();
+    let payload = serde_json::json!({
+        "app": "via-browser-win",
+        "version": "7.2.1",
+        "store": store,
+        "settings": settings,
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn import_backup(
+    app: tauri::AppHandle,
+    path: String,
+    store: tauri::State<'_, StoreState>,
+    sstate: tauri::State<'_, crate::commands::SettingsState>,
+) -> Result<(), String> {
+    import_via(&app, &path, &store, &sstate)
+}
+
+#[tauri::command]
+pub fn import_latest_backup(
+    app: tauri::AppHandle,
+    store: tauri::State<'_, StoreState>,
+    sstate: tauri::State<'_, crate::commands::SettingsState>,
+) -> Result<(), String> {
+    use tauri::Manager;
+    let dir = app.path().download_dir().map_err(|e| e.to_string())?;
+    let mut candidates: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map(|x| x == "via").unwrap_or(false))
+        .collect();
+    candidates.sort_by_key(|e| std::fs::metadata(e.path()).and_then(|m| m.modified()).ok());
+    let newest = candidates.last().ok_or_else(|| "no backup".to_string())?;
+    import_via(&app, &newest.path().to_string_lossy(), &store, &sstate)
+}
+
+fn import_via(
+    app: &tauri::AppHandle,
+    path: &str,
+    store: &tauri::State<'_, StoreState>,
+    sstate: &tauri::State<'_, crate::commands::SettingsState>,
+) -> Result<(), String> {
+    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let v: serde_json::Value = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+    if let Some(st) = v.get("store") {
+        if let Ok(st) = serde_json::from_value::<Store>(st.clone()) {
+            *store.0.lock().unwrap() = st;
+        }
+    }
+    if let Some(se) = v.get("settings") {
+        if let Ok(se) = serde_json::from_value::<crate::settings::Settings>(se.clone()) {
+            *sstate.0.lock().unwrap() = se;
+        }
+    }
+    crate::commands::persist_settings(app, &sstate.0.lock().unwrap());
+    {
+        let s = store.0.lock().unwrap();
+        persist(app, &s);
+    }
+    Ok(())
+}

@@ -670,6 +670,34 @@ function sessionUrls(): string[] {
   } catch { return []; }
 }
 
+/* ---- Download category helpers ---- */
+function dlExt(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+function dlCategory(name: string): string {
+  const e = dlExt(name);
+  if (["zip","rar","7z","tar","gz","bz2","xz","iso"].includes(e)) return "archives";
+  if (e === "apk") return "apk";
+  if (["mp4","mkv","avi","mov","wmv","flv","webm","m4v","ts"].includes(e)) return "video";
+  if (["pdf","doc","docx","xls","xlsx","ppt","pptx","txt","md","epub","mobi"].includes(e)) return "docs";
+  if (["png","jpg","jpeg","gif","webp","bmp","svg","ico","raw"].includes(e)) return "images";
+  if (["mp3","wav","flac","aac","ogg","m4a","opus","wma"].includes(e)) return "audio";
+  if (e) return "other";
+  return "other";
+}
+const DL_CATS: { id: string; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "archives", label: "Archives" },
+  { id: "apk", label: "APK" },
+  { id: "video", label: "Video" },
+  { id: "docs", label: "Documents" },
+  { id: "images", label: "Images" },
+  { id: "audio", label: "Audio" },
+  { id: "other", label: "Other" },
+];
+let dlCat = "all";
+
 /* ---- Download helpers ---- */
 function fmtBytes(n: number): string {
   if (!n || n < 0) return "0 B";
@@ -698,19 +726,90 @@ function dlRow(d: ActiveDl): string {
   </div>`;
 }
 function refreshDownloadRows() {
-  const box = q("dl-active") as HTMLElement | null; if (!box) return;
-  const active = activeDl.slice().reverse().map(dlRow).join("");
-  box.innerHTML = active || "<div class='empty'>No active downloads</div>";
-  (box.querySelectorAll<HTMLElement>("[data-dl]")).forEach(row => row.onclick = () => {
+  const catsEl = q("dl-cats") as HTMLElement | null;
+  if (catsEl) {
+    catsEl.innerHTML = "";
+    DL_CATS.forEach(c => {
+      const b = document.createElement("button");
+      b.className = "dl-cat" + (c.id === dlCat ? " on" : "");
+      b.dataset.cat = c.id;
+      b.textContent = c.label;
+      b.onclick = () => { dlCat = c.id; rebuildChipCounts(); rerenderDlList(); };
+      catsEl.appendChild(b);
+    });
+  }
+  rebuildChipCounts();
+  rerenderDlList();
+}
+function rebuildChipCounts() {
+  const catsEl = q("dl-cats") as HTMLElement | null; if (!catsEl) return;
+  const counts: Record<string, number> = {};
+  activeDl.forEach(d => { const c = dlCategory(d.path || dlName(d)); counts[c] = (counts[c] || 0) + 1; });
+  downloads.forEach(d => { const c = dlCategory(d.path || d.title); counts[c] = (counts[c] || 0) + 1; });
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  catsEl.querySelectorAll<HTMLElement>(".dl-cat").forEach(b => {
+    const id = b.dataset.cat || "other";
+    const n = id === "all" ? total : (counts[id] || 0);
+    let cnt = b.querySelector(".cnt") as HTMLElement | null;
+    if (!cnt) { cnt = document.createElement("span"); cnt.className = "cnt"; b.appendChild(cnt); }
+    cnt.textContent = String(n);
+    b.classList.toggle("on", id === dlCat);
+  });
+}
+function rerenderDlList() {
+  const list = q("dl-list") as HTMLElement | null; if (!list) return;
+  const rows: string[] = [];
+  activeDl.slice().reverse().forEach(d => {
+    if (dlCat !== "all" && dlCategory(d.path || dlName(d)) !== dlCat) return;
+    rows.push(dlRow(d));
+  });
+  downloads.forEach(d => {
+    const name = dlName(d);
+    if (dlCat !== "all" && dlCategory(d.path || d.title) !== dlCat) return;
+    rows.push(`<div class="prow done" data-dl="${esc(d.path)}">
+      <span class="ptitle">${esc(d.title || name)}</span>
+      <div class="dmeta"><small>${esc(d.path)}</small>
+        <button class="dopen" data-open="${esc(d.path)}" title="Open">↗</button>
+        <span class="dstat">Completed</span></div>
+      <span class="dbar"><i style="width:100%"></i></span>
+    </div>`);
+  });
+  list.innerHTML = rows.join("") || "<div class='empty'>No downloads here yet</div>";
+  list.querySelectorAll<HTMLElement>("[data-dl]").forEach(row => row.onclick = () => {
     const path = row.dataset.dl!; invoke("open_download", { path }).catch(() => showToast("File not found"));
   });
+  list.querySelectorAll<HTMLElement>("[data-open]").forEach(b => b.onclick = (e: Event) => {
+    e.stopPropagation(); invoke("reveal_download", { path: b.dataset.open }).catch(() => showToast("Reveal unavailable"));
+  });
+}
+
+function renderBookmarks(filter = "") {
+  const list = q("bm-list") as HTMLElement | null; if (!list) return;
+  const f = filter.trim().toLowerCase();
+  const rows = bookmarks.filter(b => !f || (b.title + " " + b.url).toLowerCase().includes(f))
+    .map(b => `<div class="prow" data-url="${esc(b.url)}"><span class="ptitle">${esc(b.title || b.url)}</span><small>${esc(b.url)}</small></div>`)
+    .join("") || "<div class='empty'>No bookmarks found</div>";
+  list.innerHTML = rows;
+  list.querySelectorAll<HTMLElement>("[data-url]").forEach(r => r.onclick = () => { closePanel(); navigate(r.dataset.url!); });
+}
+function renderHistory(filter = "") {
+  const list = q("hi-list") as HTMLElement | null; if (!list) return;
+  const f = filter.trim().toLowerCase();
+  const rows = historyItems.slice(0, 200).filter(h => !f || (h.title + " " + h.url).toLowerCase().includes(f))
+    .map(h => `<div class="prow" data-url="${esc(h.url)}"><span class="ptitle">${esc(h.title || h.url)}</span><small>${esc(h.url)}</small></div>`)
+    .join("") || "<div class='empty'>No history found</div>";
+  list.innerHTML = rows;
+  list.querySelectorAll<HTMLElement>("[data-url]").forEach(r => r.onclick = () => { closePanel(); navigate(r.dataset.url!); });
 }
 
 /* ---- Panels (bookmarks/history/downloads/settings/etc.) ---- */
 function qs<T extends HTMLElement = HTMLElement>(sel: string): T { return document.querySelector(sel) as T; }
-function panelHTML(title: string, body: string): string {
-  return `<div id="panel"><div class="pc">
-    <div class="ph"><span class="grip"></span><b>${title}</b><button class="close" id="p-close">✕</button></div>
+function panelHTML(title: string, body: string, page = false): string {
+  const ph = page
+    ? `<div class="ph"><button class="close" id="p-close" title="Back">‹</button><b>${title}</b><span style="width:34px"></span></div>`
+    : `<div class="ph"><span class="grip"></span><b>${title}</b><button class="close" id="p-close">✕</button></div>`;
+  return `<div id="panel" class="${page ? "pg" : ""}"><div class="pc">
+    ${ph}
     <div class="pb">${body}</div>
   </div></div>`;
 }
@@ -724,6 +823,7 @@ async function openPanel(kind: string, arg?: string) {
   overlay = "panel"; panelKind = kind;
   await hideActiveWebview();
   const body = document.createElement("div"); body.id = "panel";
+  const page = ["bookmarks", "history", "downloads", "settings"].includes(kind);
   const p = document.createElement("div"); p.className = "pc";
   let title = ""; let content = "";
   const close = () => closePanel();
@@ -733,20 +833,20 @@ async function openPanel(kind: string, arg?: string) {
   if (kind === "bookmarks") {
     title = "Bookmarks";
     bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
-    const items = bookmarks.map(b => `<div class="prow"><span class="ptitle">${esc(b.title || b.url)}</span><small>${esc(b.url)}</small></div>`).join("") || "<div class='empty'>No bookmarks yet</div>";
-    content = `<div class="plist">${items}</div>`;
+    content = `<div class="prow"><input class="pinput" id="bm-search" placeholder="Search bookmarks…"></div>
+      <div class="plist" id="bm-list"></div>`;
   } else if (kind === "history") {
     title = "History";
     historyItems = await invoke<HistItem[]>("list_history").catch(() => []);
-    const items = historyItems.slice(0, 100).map(h => `<div class="prow"><span class="ptitle">${esc(h.title || h.url)}</span><small>${esc(h.url)}</small></div>`).join("") || "<div class='empty'>No history yet</div>";
-    content = `<div class="plist">${items}</div><button class="pbtn danger" id="hclear">Clear history</button>`;
+    content = `<div class="prow"><input class="pinput" id="hi-search" placeholder="Search history…"></div>
+      <div class="plist" id="hi-list"></div>
+      <button class="pbtn danger" id="hclear">Clear history</button>`;
   } else if (kind === "downloads") {
     title = "Downloads";
     downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
-    const saved = downloads.map(d => `<div class="prow" data-dl="${esc(d.path)}"><span class="ptitle">${esc(d.title)}</span><small>${esc(d.path)}</small><span class="pin">✓</span></div>`).join("");
-    content = `<div class="plist" id="dl-active"></div>
-      <div class="plist" id="dl-saved">${saved}</div>
-      <div class="empty">WebView2 downloads are saved to your OS Downloads folder.</div>`;
+    content = `<div id="dl-cats"></div>
+      <div class="plist" id="dl-list"></div>
+      <div class="empty" style="text-align:center">Files are saved to your OS Downloads folder. Hover a row and tap ↗ to reveal it.</div>`;
   } else if (kind === "settings") {
     title = "Settings";
     const sw = (key: string, label: string, desc: string, on: boolean) =>
@@ -790,9 +890,11 @@ async function openPanel(kind: string, arg?: string) {
         ${act("scripts", "Userscripts", "Add, edit and delete Tampermonkey-style scripts", "Manage")}
       </div>
       <div class="setcat" id="cat-about" hidden>
-        <div class="setrow"><div><div class="lbl">Via Browser</div><div class="desc">PC port 7.2.1 · Tauri 2 + WebView2 · <5 MB</div></div><div class="ctrl"><span class="pin">✓</span></div></div>
+        <div class="setrow"><div><div class="lbl">Via Browser</div><div class="desc">PC port 7.2.1 · Tauri 2 + WebView2</div></div><div class="ctrl"><span class="pin">✓</span></div></div>
         <div class="setrow"><div><div class="lbl">Engine</div><div class="desc">OS-native Microsoft Edge WebView2</div></div></div>
         <div class="setrow"><div><div class="lbl">Homepage</div><div class="desc">Local pure-black start screen (no remote site)</div></div></div>
+        ${act("export", "Export backup", "Save bookmarks, history, settings and scripts to a .via file", "Export")}
+        ${act("import", "Import backup", "Restore from the newest .via file in your Downloads folder", "Import")}
       </div>`;
   } else if (kind === "scripts") {
     title = "Scripts";
@@ -861,28 +963,34 @@ async function openPanel(kind: string, arg?: string) {
     content = `<div class="empty">Feature panel</div>`;
   }
 
-  p.innerHTML = panelHTML(title, content);
+  p.innerHTML = panelHTML(title, content, page);
   body.appendChild(p);
   const pc = p.querySelector(".pc") as HTMLElement;
-  qs("#p-close").onclick = close;
+  const pbx = p.querySelector(".pb") as HTMLElement;
+  qs("#p-close").onclick = () => {
+    if (page) { pc.classList.add("out"); setTimeout(close, 180); } else close();
+  };
   // slide-in animation
   requestAnimationFrame(() => pc.classList.add("on"));
+  if (page) { pbx.style.paddingTop = "16px"; }
   // overlay click to close
   p.addEventListener("mousedown", (e) => { if (e.target === p) close(); });
 
   // per-panel bindings
+  if (kind === "bookmarks") {
+    renderBookmarks();
+    qs("#bm-search").oninput = (e: any) => renderBookmarks((e.target as HTMLInputElement).value);
+  }
   if (kind === "history") {
-    qs("#hclear").onclick = async () => { invoke("clear_history"); historyItems = []; closePanel(); showToast("History cleared"); };
+    renderHistory();
+    qs("#hi-search").oninput = (e: any) => renderHistory((e.target as HTMLInputElement).value);
+    qs("#hclear").onclick = async () => { invoke("clear_history"); historyItems = []; renderHistory(""); showToast("History cleared"); };
   }
   if (kind === "sniff") {
     const lc = p.querySelector("#log-clear") as HTMLElement; if (lc) lc.onclick = async () => { await invoke("network_log", { rows: [], clear: true }); closePanel(); openPanel("sniff"); };
   }
   if (kind === "downloads") {
-    refreshDownloadRows(); // renders live active rows + binds open
-    (p.querySelectorAll<HTMLElement>("#dl-saved [data-dl]")).forEach(row => row.onclick = () => {
-      const path = row.dataset.dl!;
-      invoke("open_download", { path }).catch(() => showToast("File not found"));
-    });
+    refreshDownloadRows(); // renders category chips + unified live list
   }
   if (kind === "scripts") {
     qs("#sc-new").onclick = () => {
@@ -1021,6 +1129,12 @@ async function openPanel(kind: string, arg?: string) {
         case "ua": closePanel(); openPanel("ua"); break;
         case "cleardata": closePanel(); clearDataNow(); break;
         case "scripts": closePanel(); openPanel("scripts"); break;
+        case "export":
+          invoke<string>("export_backup").then(path => showToast("Backup saved: " + path.split(/[\\/]/).pop())).catch(() => showToast("Export failed"));
+          break;
+        case "import":
+          invoke("import_latest_backup").then(() => showToast("Backup restored")).catch(() => showToast("No .via backup found in Downloads"));
+          break;
         case "savecss":
           userCss = (qs("#set-css") as HTMLTextAreaElement).value;
           persistSettings({ user_css: userCss });

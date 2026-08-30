@@ -94,6 +94,9 @@ impl Default for Settings {
 
 pub fn resolve_ua(settings: &Settings) -> Option<String> {
     match settings.ua_mode.as_str() {
+        "Desktop" => Some(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0".into(),
+        ),
         "Mobile" => Some(
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36".into(),
         ),

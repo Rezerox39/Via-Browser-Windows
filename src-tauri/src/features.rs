@@ -67,6 +67,23 @@ fn persist(app: &tauri::AppHandle, s: &Store) {
     let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
 }
 
+/// Record a completed download into the persistent store (used by both the
+/// native `on_download` handler and the JS download fallback so the Downloads
+/// panel always reflects real saves).
+pub fn record_download(app: &tauri::AppHandle, state: &StoreState, url: String, path: std::path::PathBuf) {
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let title = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("download")
+        .to_string();
+    {
+        let mut s = state.0.lock().unwrap();
+        s.downloads.push(Download { url, path: path.to_string_lossy().into_owned(), title, size, done: true });
+        persist(app, &s);
+    }
+}
+
 fn app_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     app.path().app_config_dir().ok()
 }
@@ -245,22 +262,13 @@ pub fn download_from_js(
         ));
     }
 
-    let size = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
-    {
-        let mut s = state.0.lock().unwrap();
-        s.downloads.push(Download {
-            url: url.clone(),
-            path: dest.to_string_lossy().into_owned(),
-            title: fname.clone(),
-            size,
-            done: true,
-        });
-        persist(&app, &s);
-    }
+    record_download(&app, &state, url.clone(), dest.clone());
     if let Some(win) = &win {
         let _ = win.emit("download-progress", serde_json::json!({
             "id": null, "url": url, "path": dest.to_string_lossy(),
-            "received": size, "total": size, "done": true, "success": true,
+            "received": std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
+            "total": std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0),
+            "done": true, "success": true,
         }));
     }
     Ok(dest.to_string_lossy().into_owned())

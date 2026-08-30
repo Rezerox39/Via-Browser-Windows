@@ -358,6 +358,12 @@ pub async fn create_tab(
                 }
                 DownloadEvent::Finished { url, path, success } => {
                     println!("[via] DOWNLOAD FINISHED: {:?} success={}", url.to_string(), success);
+                    if success {
+                        if let Some(p) = &path {
+                            let store = wv_app.state::<crate::features::StoreState>();
+                            crate::features::record_download(&wv_app, &store, url.to_string(), p.clone());
+                        }
+                    }
                     if let Some(win) = &win {
                         let _ = win.emit("download-progress", serde_json::json!({
                             "id": id, "url": url.to_string(),

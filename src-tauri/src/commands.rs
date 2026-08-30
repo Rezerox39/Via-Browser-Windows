@@ -8,6 +8,7 @@ use tauri::{
 use crate::adblock;
 use crate::init;
 use crate::settings::{self, Settings};
+use tauri_plugin_notification::NotificationExt;
 
 #[derive(Clone, Serialize)]
 pub struct SuggestItem {
@@ -307,28 +308,20 @@ pub async fn create_tab(
                         .download_dir()
                         .unwrap_or_else(|_| std::env::temp_dir());
                     let _ = std::fs::create_dir_all(&dir);
-                    // Decode the real filename; fall back to a ?filename= /
-                    // ?file= / ?name= query param, then a timestamped name.
-                    let fname = url
-                        .path_segments()
-                        .and_then(|segs| segs.last())
-                        .filter(|f| !f.is_empty())
-                        .and_then(|f| percent_decode(f))
-                        .filter(|f| !f.is_empty() && f.len() < 128)
-                        .or_else(|| {
-                            url.query_pairs().find_map(|(k, v)| {
-                                matches!(k.as_ref(), "filename" | "file" | "name" | "download")
-                                    .then(|| v.to_string())
-                                    .filter(|f| !f.is_empty() && f.len() < 128)
-                            })
-                        })
-                        .unwrap_or_else(|| {
-                            let ts = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            format!("download-{ts}")
-                        });
+                    // Decode the REAL filename. WebView2 reports the download URL
+                    // AFTER redirects (e.g. GitHub -> objects.githubusercontent.com
+                    // AWS bucket), so the path segment becomes a UUID hash and the
+                    // true name sits in query params like
+                    //   response-content-disposition=attachment;filename%3Dzmt.apk
+                    // Priority: response-content-disposition > filename/file/name/
+                    // download query params > URL path segment > safe fallback.
+                    let fname = real_filename(&url).unwrap_or_else(|| {
+                        let ts = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        format!("download-{ts}.zip")
+                    });
                     let dest = dir.join(&fname);
                     // If a file with that name exists, avoid clobbering.
                     let dest = if dest.exists() {
@@ -354,6 +347,10 @@ pub async fn create_tab(
                             "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
                         }));
                     }
+                    let _ = wv_app.notification().builder()
+                        .title("Via Browser")
+                        .body(format!("Download started: {}", dest.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into())))
+                        .show();
                 }
                 DownloadEvent::Finished { url, path, success } => {
                     println!("[via] DOWNLOAD FINISHED: {:?} success={}", url.to_string(), success);
@@ -363,13 +360,22 @@ pub async fn create_tab(
                             crate::features::record_download(&wv_app, &store, url.to_string(), p.clone());
                         }
                     }
+                    let file_name = path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
                     if let Some(win) = &win {
                         let _ = win.emit("download-progress", serde_json::json!({
                             "id": id, "url": url.to_string(),
-                            "path": path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+                            "path": path.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
                             "received": 0, "total": 0, "done": true, "success": success,
                         }));
                     }
+                    let _ = wv_app.notification().builder()
+                        .title("Via Browser")
+                        .body(if success {
+                            format!("Download complete: {file_name}")
+                        } else {
+                            format!("Download failed: {file_name}")
+                        })
+                        .show();
                 }
                 _ => {}
             }
@@ -666,6 +672,70 @@ pub fn normalize_url(input: &str) -> String {
 }
 
 /// Minimal percent-decoder ("%XX" -> byte), returning None on malformed input.
+/// Extract the real filename for a download from a (possibly redirect-mangled)
+/// download URL. GitHub-style CDN URLs carry the true name in query params:
+///   response-content-disposition=attachment%3B%20filename%3D%22zmt.apk%22
+///   (or filename*=UTF-8''zmt.apk)
+/// Falls back to path segment, then common query keys. Returns None if nothing
+/// usable is found (e.g. a naked UUID hash without an extension).
+fn real_filename(url: &Url) -> Option<String> {
+    // 1) Content-Disposition query param (AWS S3 / GitHub / Google Drive style).
+    for (k, v) in url.query_pairs() {
+        let key = k.as_ref().to_ascii_lowercase();
+        if key == "response-content-disposition" || key == "content-disposition" {
+            let disp = v.as_ref();
+            // filename*=UTF-8''name
+            if let Some(star) = disp.find("filename*=") {
+                let after = &disp[star + "filename*=".len()..];
+                if let Some(eq) = after.find("''") {
+                    let cand = after[eq + 2..].trim_matches('"').trim();
+                    if let Some(d) = percent_decode(cand) {
+                        let d = d.trim().to_string();
+                        if !d.is_empty() && d.len() < 256 { return Some(d); }
+                    }
+                }
+            }
+            // filename="x" or filename=x
+            if let Some(pos) = disp.find("filename=") {
+                let mut cand = disp[pos + "filename=".len()..].trim().to_string();
+                if cand.starts_with('"') { cand = cand[1..].to_string(); }
+                cand = cand.split('"').next().unwrap_or("").to_string();
+                if cand.is_empty() {
+                    // no quotes: take up to ';'
+                    cand = disp[pos + "filename=".len()..].split(';').next().unwrap_or("").trim().to_string();
+                }
+                if let Some(d) = percent_decode(cand.trim_matches('"')) {
+                    let d = d.trim().to_string();
+                    if !d.is_empty() && d.len() < 256 { return Some(d); }
+                }
+            }
+        }
+        // 2) Direct query keys that hold the filename.
+        if matches!(key.as_str(), "filename" | "file" | "name" | "download" | "x-amz-meta-filename") {
+            let cand = v.as_ref().trim().trim_matches('"').to_string();
+            if let Some(d) = percent_decode(&cand) {
+                let d = d.trim().to_string();
+                if !d.is_empty() && d.len() < 256 { return Some(d); }
+            }
+        }
+    }
+    // 3) Path segment (normal case: https://.../releases/download/v1.2/zmt.apk).
+    let path_name = url
+        .path_segments()
+        .and_then(|segs| segs.last())
+        .filter(|f| !f.is_empty())
+        .and_then(|f| percent_decode(f))
+        .filter(|f| !f.is_empty() && f.len() < 128);
+    if let Some(p) = path_name {
+        // A 32-char hex/UUID-ish segment is almost certainly an AWS/redirect
+        // hash, not a real filename. Reject it unless it has an extension.
+        let has_ext = p.contains('.');
+        let looks_hash = p.len() >= 22 && p.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
+        if has_ext || !looks_hash { return Some(p); }
+    }
+    None
+}
+
 fn percent_decode(input: &str) -> Option<String> {
     let bytes = input.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());

@@ -16,6 +16,7 @@ tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "blocking", "stream", "gzip", "charset"] }
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"

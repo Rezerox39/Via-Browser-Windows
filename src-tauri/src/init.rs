@@ -160,14 +160,55 @@ pub fn build(s: &Settings) -> String {
   // WebView2's native DownloadStarting + new-window interception is unreliable
   // on Windows. Like a standard browser, we intercept every click on a link
   // that points to a file extension (regardless of the download attribute or
-  // target="_blank") and stream the file straight to the OS Downloads folder
-  // via the host's download_from_js command.
-  var DL_RE = /\\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
+  // target="_blank") and stream the file straight to the OS Downloads folder.
+  // Two routes:
+  //  - http(s) links: the host streams via reqwest (download_from_js).
+  //  - blob:/data: links are page-local, Rust can't fetch them, so the page
+  //    reads the bytes itself and hands them to the host (save_blob_download).
+  var DL_RE = /\.(apk|xapk|zip|rar|7z|tar|gz|bz2|xz|iso|img|exe|msi|msix|deb|rpm|dmg|pkg|torrent|mp4|mkv|avi|mov|wmv|flv|webm|m4v|ts|mpg|mpeg|3gp|mp3|wav|flac|aac|ogg|m4a|opus|wma|pdf|epub|mobi|doc|docx|xls|xlsx|ppt|pptx)([?#]|$)/i;
   function viaFilename(href) {{
     try {{
       var p = href.split(/[?#]/)[0].split("/");
       return decodeURIComponent(p[p.length - 1] || "");
     }} catch (e) {{ return ""; }}
+  }}
+  function viaBlobDesc(extra) {{
+    var s = (extra || "").trim();
+    if (s.indexOf(".") > 0) s = s.slice(0, s.lastIndexOf("."));
+    return s.replace(/[^A-Za-z0-9._ -]/g, "_").slice(0, 80) || "download-" + Date.now();
+  }}
+  function viaBlobExt(type) {{
+    var m = {{
+      "application/pdf": ".pdf", "application/zip": ".zip",
+      "application/x-zip-compressed": ".zip", "text/plain": ".txt",
+      "application/json": ".json", "text/html": ".html",
+      "text/csv": ".csv", "application/xml": ".xml", "text/xml": ".xml"
+    }};
+    if (m[type]) return m[type];
+    if (type && type.indexOf("image/") === 0) {{
+      var e = {{
+        "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+        "image/webp": ".webp", "image/svg+xml": ".svg", "image/bmp": ".bmp",
+        "image/tiff": ".tiff", "image/x-icon": ".ico", "image/avif": ".avif"
+      }}[type];
+      return e || "";
+    }}
+    if (type && type.indexOf("video/") === 0) {{
+      var ve = {{
+        "video/mp4": ".mp4", "video/webm": ".webm", "video/x-matroska": ".mkv",
+        "video/quicktime": ".mov", "video/ogg": ".ogv", "video/mpeg": ".mpeg", "video/x-msvideo": ".avi"
+      }}[type];
+      return ve || "";
+    }}
+    if (type && type.indexOf("audio/") === 0) {{
+      var ae = {{
+        "audio/mpeg": ".mp3", "audio/wav": ".wav", "audio/x-wav": ".wav",
+        "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/aac": ".aac",
+        "audio/mp4": ".m4a", "audio/webm": ".weba", "audio/opus": ".opus"
+      }}[type];
+      return ae || "";
+    }}
+    return "";
   }}
   document.addEventListener("click", function (e) {{
     try {{
@@ -179,14 +220,36 @@ pub fn build(s: &Settings) -> String {
       var isFile = DL_RE.test(href);
       var dlAttr = a.hasAttribute("download") && a.getAttribute("download") !== "false";
       if (!isBlob && !isFile && !dlAttr) return;
-      // Only swallow left-click navigations that look like downloads. Let the
-      // host stream the file; prevent new-window/navigation entirely.
       e.preventDefault();
       e.stopPropagation();
       var u = new URL(href, location.href).href;
+      if (isBlob) {{
+        try {{
+          fetch(u).then(function (r) {{ return r.blob(); }}).then(function (b) {{
+            try {{
+              var fr = new FileReader();
+              fr.onload = function () {{
+                try {{
+                  var dd = fr.result || "";
+                  var idx = dd.indexOf(",");
+                  var base = viaBlobDesc(a.getAttribute("download") || viaFilename(u)) + viaBlobExt(b.type || "");
+                  window.__viaSend("saveBlob", {{
+                    url: u,
+                    filename: base.split("/").pop(),
+                    bytes: idx >= 0 ? dd.slice(idx + 1) : ""
+                  }});
+                }} catch (e3) {{}}
+              }};
+              fr.readAsDataURL(b);
+            }} catch (e3) {{}}
+          }}).catch(function () {{}});
+        }} catch (e2) {{}}
+        return;
+      }}
       window.__viaSend("startDl", {{ url: u, filename: viaFilename(u) }});
     }} catch (err) {{}}
   }}, true);
+
 
   // ---- User scripts ----
   var SCRIPTS = [{scripts_js}];

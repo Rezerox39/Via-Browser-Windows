@@ -1320,6 +1320,13 @@ listen<{ id: number; msg: string }>("via-msg", async ev => {
         console.error("[via] download failed:", err);
         showToast("Download failed");
       });
+  } else if (action === "saveBlob" && data?.url && data?.bytes) {
+    invoke<string>("save_blob_download", { url: data.url, filename: data?.filename || null, bytes: data.bytes })
+      .then((path: string) => showToast("Saved: " + path.split(/[\\/]/).pop()))
+      .catch((err: any) => {
+        console.error("[via] blob download failed:", err);
+        showToast("Download failed");
+      });
   } else if (action === "dlTotal" && data?.url && data?.len > 0) {
     const dl = activeDl.find(x => x.url === data.url);
     if (dl) { dl.total = data.len; if (overlay === "panel") refreshDownloadRows(); }

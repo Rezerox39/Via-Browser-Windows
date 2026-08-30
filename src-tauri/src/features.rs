@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -296,6 +297,61 @@ pub fn download_from_js(
     // 5. Completion: persist + tell the UI it is done.
     record_download(&app, &state, url.clone(), dest.clone());
     emit("download-progress", finished_payload(&url, &dest, received, total, true));
+    emit("download-finished", serde_json::json!({
+        "id": null, "url": url, "path": dest.to_string_lossy(), "done": true, "success": true,
+    }));
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+
+/// Receive page-local blob/data: bytes fetched by the injected JS and save
+/// them straight to the OS Downloads folder.
+#[tauri::command]
+pub fn save_blob_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, StoreState>,
+    url: String,
+    filename: Option<String>,
+    bytes: String,
+) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("download failed: empty blob".into());
+    }
+    let download_dir = app
+        .path()
+        .download_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&download_dir);
+    let fname = filename
+        .filter(|f| !f.trim().is_empty() && f.len() < 128)
+        .map(|f| sanitize(&f))
+        .filter(|f| !f.is_empty())
+        .unwrap_or_else(|| {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            format!("download-{ts}")
+        });
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(bytes.as_bytes())
+        .map_err(|e| format!("base64 decode error: {e}"))?;
+    let total = data.len() as u64;
+    let dest = download_dir.join(&fname);
+    let _ = std::fs::remove_file(&dest);
+    let _ = std::fs::write(&dest, &data);
+
+    let win = app.get_webview_window("main");
+    let emit = |name: &str, payload: serde_json::Value| {
+        if let Some(win) = &win {
+            let _ = win.emit(name, payload);
+        }
+    };
+    emit("download-started", serde_json::json!({
+        "id": null, "url": url, "path": dest.to_string_lossy(), "total": total,
+    }));
+    record_download(&app, &state, url.clone(), dest.clone());
+    emit("download-progress", finished_payload(&url, &dest, total, total, true));
     emit("download-finished", serde_json::json!({
         "id": null, "url": url, "path": dest.to_string_lossy(), "done": true, "success": true,
     }));

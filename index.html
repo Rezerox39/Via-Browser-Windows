@@ -27,36 +27,15 @@
       </button>
     </div>
     <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
-    <div id="home-search" role="button" tabindex="0">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-      <span>Search or enter URL</span>
+    <div id="home-search-wrap">
+      <div id="home-search" role="button" tabindex="0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input id="home-input" type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false" />
+      </div>
     </div>
   </div>
 
-  <!-- URL bar (visible when browsing) -->
-  <div id="url-bar" class="hidden">
-    <button id="url-back" title="Back" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
-    </button>
-    <button id="url-fwd" title="Forward" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-    </button>
-    <input id="url-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
-    <button id="url-go" title="Go">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-    </button>
-    <button id="url-home" title="Home">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
-    </button>
-    <button id="url-tabs" title="Tabs">
-      <span id="url-tab-count">1</span>
-    </button>
-    <button id="url-menu" title="Menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-    </button>
-  </div>
-
-  <!-- Bottom Navigation (Via's 5 thin-stroke buttons) -->
+  <!-- Floating Bottom Navigation -->
   <div id="bottom-nav">
     <button id="nav-back" title="Back" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>

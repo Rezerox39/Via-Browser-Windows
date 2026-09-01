@@ -63,7 +63,9 @@ pub struct Settings {
     pub read_aloud_enabled: bool,
     pub scripts: Vec<UserScript>,
     pub sites: Vec<SiteConfig>,
-    pub pages_log: Vec<Vec<String>>, // most-recent network log rows (url, type, size)
+    pub pages_log: Vec<Vec<String>>,
+    pub restore_tabs: bool,
+    pub homepage_shortcuts: Vec<HomeShortcut>, // most-recent network log rows (url, type, size)
 }
 
 impl Default for Settings {
@@ -88,6 +90,8 @@ impl Default for Settings {
             scripts: Vec::new(),
             sites: Vec::new(),
             pages_log: Vec::new(),
+            restore_tabs: false,
+            homepage_shortcuts: Vec::new(),
         }
     }
 }
@@ -108,5 +112,20 @@ pub fn resolve_ua(settings: &Settings) -> Option<String> {
             if ua.is_empty() { None } else { Some(ua.to_string()) }
         }
         _ => None,
+    }
+}
+
+/// A single homepage speed-dial shortcut (Via's "Add to homepage").
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomeShortcut {
+    pub label: String,
+    pub url: String,
+    pub icon: String,
+}
+
+impl Default for HomeShortcut {
+    fn default() -> Self {
+        Self { label: String::new(), url: String::new(), icon: "🌐".into() }
     }
 }

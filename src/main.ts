@@ -9,22 +9,32 @@ type Settings = {
   night_mode: boolean; desktop_mode: boolean; text_size: number;
   show_images: boolean; network_log: boolean; game_mode: boolean;
   search_suggest: boolean; scripts: UserScript[]; sites: SiteConfig[];
-  pages_log: string[][];
+  pages_log: string[][]; restore_tabs: boolean; homepage_shortcuts: HomeShortcut[];
 };
 type UserScript = { id: string; name: string; match_urls: string; code: string; enabled: boolean };
 type SiteConfig = { host: string; ua_mode: string; adblock_enabled: boolean };
+type HomeShortcut = { label: string; url: string; icon: string };
 type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
 type ActiveDl = { url: string; path: string; received: number; total: number; done: boolean; success?: boolean };
 type TabInfo = { id: number; url: string; title: string; loading: boolean; active: boolean };
+type SessionEntry = { url: string; title: string; active: boolean; order: number };
+type ClosedTab = { url: string; title: string; ts: number };
 
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=",
   DuckDuckGo: "https://duckduckgo.com/?q=",
+  Bing: "https://www.bing.com/search?q=",
   Baidu: "https://www.baidu.com/s?wd=",
 };
-const DL_CATS = ["all","archives","apk","video","docs","images","audio","other"] as const;
+
+const DEFAULT_SHORTCUTS: HomeShortcut[] = [
+  { label: "Google", url: "https://www.google.com", icon: "🔍" },
+  { label: "YouTube", url: "https://www.youtube.com", icon: "📺" },
+  { label: "GitHub", url: "https://github.com", icon: "💻" },
+  { label: "Twitter", url: "https://x.com", icon: "🐦" },
+];
 
 /* ─── State ─── */
 let tabs: Tab[] = [];
@@ -46,12 +56,9 @@ let networkLog = false;
 let adblockOn = true;
 let incognitoMode = false;
 let restoreTabs = false;
-let homepageShortcuts = [
-  { label: "Google", url: "https://www.google.com", icon: "🔍" },
-  { label: "YouTube", url: "https://www.youtube.com", icon: "📺" },
-  { label: "GitHub", url: "https://github.com", icon: "💻" },
-  { label: "Twitter", url: "https://x.com", icon: "🐦" },
-];
+let homepageShortcuts: HomeShortcut[] = [...DEFAULT_SHORTCUTS];
+let contextMenu: HTMLElement | null = null;
+let activeBookmarkFolder = "";
 
 /* ─── DOM Refs ─── */
 const $ = (s: string) => document.getElementById(s) as HTMLElement;
@@ -106,7 +113,6 @@ async function createTab(url?: string, hidden = false): Promise<TabInfo> {
 }
 async function switchTab(id: number) {
   if (activeId === id) return;
-  // hide all other tabs
   for (const t of tabs) {
     if (t.id !== id && t.active) {
       t.active = false;
@@ -118,7 +124,6 @@ async function switchTab(id: number) {
   tab.active = true;
   activeId = id;
   await invoke("show_tab", { id });
-  // update toolbar
   const addrInput = $("tb-input") as HTMLInputElement;
   const homeEl = $("home");
   if (tab.url && tab.url !== "about:blank") {
@@ -131,7 +136,11 @@ async function switchTab(id: number) {
   updateBackFwd();
   updateTabCount();
 }
-async function closeTab(id: number) {
+async function closeTab(id: number, pushToStack = true) {
+  const tab = tabs.find(t => t.id === id);
+  if (tab && pushToStack) {
+    await invoke("push_closed_tab", { url: tab.url, title: tab.title }).catch(() => {});
+  }
   await invoke("close_tab", { id });
   tabs = tabs.filter(t => t.id !== id);
   if (activeId === id) {
@@ -140,6 +149,23 @@ async function closeTab(id: number) {
     else $("home").classList.remove("hidden");
   }
   updateTabCount();
+}
+async function undoCloseTab() {
+  const closed = await invoke<ClosedTab | null>("pop_closed_tab").catch(() => null);
+  if (closed && closed.url) {
+    const info = await createTab(closed.url);
+    switchTab(info.id);
+  }
+}
+async function saveSession() {
+  if (!restoreTabs) return;
+  const entries: SessionEntry[] = tabs.map((t, i) => ({
+    url: t.url || "about:blank",
+    title: t.title,
+    active: t.id === activeId,
+    order: i,
+  }));
+  await invoke("save_session", { entries }).catch(() => {});
 }
 function updateTabCount() { $("tb-tab-count").textContent = String(tabs.length || 0); }
 async function updateBackFwd() {
@@ -150,7 +176,6 @@ async function updateBackFwd() {
 function navigate(url: string) {
   if (!url) return;
   if (activeId == null) {
-    // create tab, then navigate
     createTab(url).then(info => {
       switchTab(info.id);
       $("home").classList.add("hidden");
@@ -168,7 +193,6 @@ function handleAddressGo() {
   const input = $("tb-input") as HTMLInputElement;
   const val = input.value.trim();
   if (!val) return;
-  const finalUrl = (settings?.search_engine || "Google");
   if (/^https?:\/\//i.test(val) || /^[a-z0-9-]+\.[a-z]/i.test(val) || val.includes("://")) {
     navigate(/^https?:\/\//i.test(val) ? val : "https://" + val);
   } else {
@@ -194,7 +218,7 @@ function renderSettings(body: HTMLElement) {
     <div class="set-section">
       <div class="set-label">Privacy</div>
       <div class="set-row" data-set="adblock"><div class="sr-text"><div class="sr-title">Ad blocking</div><div class="sr-desc">Block ads and trackers</div></div><div class="switch ${adblockOn?"on":""}"></div></div>
-      <div class="set-row" data-set="desktop"><div class="sr-text"><div class="sr-title">User-Agent</div></div><div class="sr-val">${desktopMode?"Desktop":"Mobile"}</div></div>
+      <div class="set-row" data-set="desktop"><div class="sr-text"><div class="sr-title">User-Agent</div></div><div class="sr-val">${settings?.ua_mode || "Default"}</div></div>
     </div>
     <div class="set-section">
       <div class="set-label">Data</div>
@@ -224,7 +248,9 @@ async function handleSetting(key: string) {
     }
     case "restore":
       restoreTabs = !restoreTabs;
+      if (settings) settings.restore_tabs = restoreTabs;
       openSubPanel("Settings", renderSettings, "settings");
+      showToast(restoreTabs ? "Session restore ON" : "Session restore OFF");
       await saveSettings();
       break;
     case "suggest":
@@ -239,12 +265,14 @@ async function handleSetting(key: string) {
       openSubPanel("Settings", renderSettings, "settings");
       await saveSettings();
       break;
-    case "textsize":
+    case "textsize": {
       textSize = textSize >= 2.0 ? 0.5 : textSize + 0.25;
       if (settings) settings.text_size = textSize;
+      applyTextSize();
       openSubPanel("Settings", renderSettings, "settings");
       await saveSettings();
       break;
+    }
     case "showimages":
       showImages = !showImages;
       if (settings) settings.show_images = showImages;
@@ -257,13 +285,17 @@ async function handleSetting(key: string) {
       openSubPanel("Settings", renderSettings, "settings");
       await saveSettings();
       break;
-    case "desktop":
-      desktopMode = !desktopMode;
-      if (settings) settings.desktop_mode = desktopMode;
+    case "desktop": {
+      if (!settings) break;
+      const modes = ["Default", "Desktop", "Mobile", "Via", "Custom"];
+      const cur = modes.indexOf(settings.ua_mode);
+      settings.ua_mode = modes[(cur + 1) % modes.length];
+      desktopMode = settings.ua_mode !== "Mobile";
       openSubPanel("Settings", renderSettings, "settings");
+      showToast("UA: " + settings.ua_mode);
       await saveSettings();
-      if (activeId) invoke("navigate_tab", { id: activeId, url: await invoke("get_tab_url", { id: activeId }) }).catch(() => {});
       break;
+    }
     case "cleardata":
       await invoke("clear_data").then(() => showToast("Data cleared")).catch(() => showToast("Failed"));
       break;
@@ -275,6 +307,10 @@ async function handleSetting(key: string) {
       break;
   }
 }
+function applyTextSize() {
+  if (!activeId) return;
+  invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }).catch(() => {});
+}
 async function saveSettings() {
   if (settings) {
     settings.night_mode = nightMode;
@@ -282,20 +318,50 @@ async function saveSettings() {
     settings.text_size = textSize;
     settings.show_images = showImages;
     settings.search_engine = searchEngine;
+    settings.restore_tabs = restoreTabs;
     await invoke("set_settings", { s: settings }).catch(() => {});
   }
 }
 
 /* ─── Bookmarks Panel ─── */
-function renderBookmarks(body: HTMLElement, filter = "") {
+function getBookmarkFolders(): string[] {
+  const folders = new Set<string>();
+  bookmarks.forEach(b => { if (b.folder) folders.add(b.folder); });
+  return Array.from(folders).sort();
+}
+function renderBookmarks(body: HTMLElement, filter = "", folder = "") {
+  activeBookmarkFolder = folder;
   const f = filter.toLowerCase();
-  const filtered = bookmarks.filter(b => !f || (b.title + " " + b.url).toLowerCase().includes(f));
-  const html = `<div class="pp-head"><input id="bm-search" placeholder="Search bookmarks…" value="${filter}"></div>
+  let filtered = bookmarks.filter(b => {
+    if (folder && b.folder !== folder) return false;
+    if (!f) return true;
+    return (b.title + " " + b.url).toLowerCase().includes(f);
+  });
+  const folders = getBookmarkFolders();
+  const folderHeader = folders.length > 0 ? `
+    <div class="pp-section-header">Folders</div>
+    <div class="pp-folder-list">
+      ${folders.map(f => `<div class="pp-item" data-folder="${esc(f)}">
+        <div class="pi-icon">📁</div>
+        <div class="pi-info"><div class="pi-title">${esc(f)}</div>
+        <div class="pi-sub">${bookmarks.filter(b => b.folder === f).length} items</div></div></div>`).join("")}
+    </div>` : "";
+  const html = `
+    <div class="pp-head"><input id="bm-search" placeholder="Search bookmarks…" value="${filter}">
+    ${folder ? `<button class="pp-folder-back" data-back-folder>← ${esc(folder)}</button>` : ""}
+    </div>
+    ${folderHeader}
+    ${folder ? '<div class="pp-section-header">Bookmarks in "' + esc(folder) + '"</div>' : ""}
     <div class="pp-list">${filtered.length ? filtered.map(b => `<div class="pp-item" data-url="${esc(b.url)}">
       <div class="pi-icon">🔖</div><div class="pi-info"><div class="pi-title">${esc(b.title || b.url)}</div>
-      <div class="pi-sub">${esc(b.url)}</div></div><div class="pi-action" data-rm="${esc(b.url)}">✕</div></div>`).join("") : '<div class="empty-state">No bookmarks</div>'}</div>`;
+      <div class="pi-sub">${esc(b.url)}</div></div><div class="pi-action" data-rm="${esc(b.url)}">✕</div></div>`).join("") : '<div class="empty-state">No bookmarks</div>'}</div>
+    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="bm-add">+ Add Bookmark</button></div>`;
   body.innerHTML = html;
-  body.querySelector("#bm-search")?.addEventListener("input", (e) => renderBookmarks(body, (e.target as HTMLInputElement).value));
+  body.querySelector("#bm-search")?.addEventListener("input", (e) => renderBookmarks(body, (e.target as HTMLInputElement).value, activeBookmarkFolder));
+  body.querySelector("[data-back-folder]")?.addEventListener("click", () => renderBookmarks(body, filter, ""));
+  body.querySelectorAll("[data-folder]").forEach(el => {
+    el.addEventListener("click", () => renderBookmarks(body, filter, el.getAttribute("data-folder")!));
+  });
   body.querySelectorAll(".pp-item[data-url]").forEach(el => {
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).classList.contains("pi-action")) return;
@@ -309,9 +375,20 @@ function renderBookmarks(body: HTMLElement, filter = "") {
       const url = el.getAttribute("data-rm")!;
       await invoke("remove_bookmark", { url });
       bookmarks = bookmarks.filter(b => b.url !== url);
-      renderBookmarks(body, body.querySelector<HTMLInputElement>("#bm-search")?.value || "");
+      renderBookmarks(body, body.querySelector<HTMLInputElement>("#bm-search")?.value || "", activeBookmarkFolder);
       showToast("Bookmark removed");
     });
+  });
+  body.querySelector("#bm-add")?.addEventListener("click", async () => {
+    if (!activeId) return;
+    const url = tabs.find(t => t.id === activeId)?.url || "";
+    const title = tabs.find(t => t.id === activeId)?.title || url;
+    const folder = activeBookmarkFolder || "home";
+    await invoke("add_bookmark", { url, title, folder }).then(() => {
+      bookmarks.push({ url, title, folder });
+      renderBookmarks(body, "", activeBookmarkFolder);
+      showToast("Bookmark added");
+    }).catch(() => showToast("Already bookmarked"));
   });
 }
 
@@ -322,7 +399,7 @@ function renderHistory(body: HTMLElement, filter = "") {
   body.innerHTML = `<div class="pp-head"><input id="hi-search" placeholder="Search history…" value="${filter}"></div>
     <div class="pp-list">${filtered.length ? filtered.map(h => {
       const age = Date.now() - h.ts;
-      const ageStr = age < 86400000 ? "Today" : age < 172800000 ? "Yesterday" : new Date(h.ts).toLocaleDateString();
+      const ageStr = age < 86400000 ? "Today" : age < 172800000 ? "Yesterday" : new Date(h.ts * 1000).toLocaleDateString();
       return `<div class="pp-item" data-url="${esc(h.url)}"><div class="pi-icon">🕐</div>
         <div class="pi-info"><div class="pi-title">${esc(h.title || h.url)}</div>
         <div class="pi-sub">${ageStr} · ${esc(h.url.slice(0, 60))}</div></div></div>`;
@@ -386,13 +463,44 @@ function renderScripts(body: HTMLElement) {
 /* ─── Site Config Panel ─── */
 function renderSiteConfig(body: HTMLElement) {
   const configs = settings?.sites || [];
-  body.innerHTML = `<div class="pp-list" id="sc-list">
-    ${configs.length ? configs.map((c, i) => `<div class="pp-item" data-idx="${i}">
-      <div class="pi-icon">🌐</div>
-      <div class="pi-info"><div class="pi-title">${esc(c.host)}</div>
-      <div class="pi-sub">UA: ${c.ua_mode || "Default"} · AdBlock: ${c.adblock_enabled ? "On" : "Off"}</div></div>
-      <div class="pi-action" data-rm="${i}">✕</div></div>`).join("")
-    : '<div class="empty-state">No site configurations</div>'}</div>`;
+  const currentUrl = tabs.find(t => t.id === activeId)?.url || "";
+  const currentHost = currentUrl ? (() => { try { return new URL(currentUrl).hostname; } catch { return ""; } })() : "";
+  body.innerHTML = `
+    ${currentHost ? `<div class="set-section">
+      <div class="set-label">Current Site: ${esc(currentHost)}</div>
+      <div class="set-row" data-sc="adblock"><div class="sr-text"><div class="sr-title">Ad blocking</div></div>
+        <div class="switch ${(settings?.sites.find(s => s.host === currentHost)?.adblock_enabled ?? settings?.adblock_enabled ?? true) ? 'on' : ''}"></div></div>
+      <div class="set-row" data-sc="ua"><div class="sr-text"><div class="sr-title">User-Agent</div></div>
+        <div class="sr-val">${settings?.sites.find(s => s.host === currentHost)?.ua_mode || "Default"}</div></div>
+    </div>` : ""}
+    <div class="set-section">
+      <div class="set-label">All Sites</div>
+      <div class="pp-list">${configs.length ? configs.map((c, i) => `<div class="pp-item" data-idx="${i}">
+        <div class="pi-icon">🌐</div><div class="pi-info"><div class="pi-title">${esc(c.host)}</div>
+        <div class="pi-sub">UA: ${c.ua_mode || "Default"} · AdBlock: ${c.adblock_enabled ? "On" : "Off"}</div></div>
+        <div class="pi-action" data-rm="${i}">✕</div></div>`).join("")
+      : '<div class="empty-state">No site configurations</div>'}</div>
+    </div>`;
+  body.querySelectorAll("[data-sc]").forEach(el => {
+    el.addEventListener("click", async () => {
+      if (!currentHost) return;
+      const key = el.getAttribute("data-sc")!;
+      let cfg = settings?.sites.find(s => s.host === currentHost);
+      if (!cfg) {
+        cfg = { host: currentHost, ua_mode: "", adblock_enabled: settings?.adblock_enabled ?? true };
+        if (settings) settings.sites.push(cfg);
+      }
+      if (key === "adblock") {
+        cfg.adblock_enabled = !cfg.adblock_enabled;
+      } else if (key === "ua") {
+        const modes = ["", "Desktop", "Mobile", "Via", "Custom"];
+        const cur = modes.indexOf(cfg.ua_mode);
+        cfg.ua_mode = modes[(cur + 1) % modes.length];
+      }
+      await invoke("save_site_config", { cfg }).catch(() => {});
+      renderSiteConfig(body);
+    });
+  });
   body.querySelectorAll(".pi-action[data-rm]").forEach(el => {
     el.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -408,6 +516,40 @@ function renderSiteConfig(body: HTMLElement) {
   });
 }
 
+/* ─── Cookie Inspector Panel ─── */
+async function renderCookieInspector(body: HTMLElement) {
+  const cookies = await invoke<Array<{name:string; value:string; domain:string; path:string; expires:boolean}>>("get_cookies").catch(() => []);
+  body.innerHTML = `
+    <div class="pp-head"><input id="cookie-search" placeholder="Search cookies…"></div>
+    <div class="pp-list">${cookies.length ? cookies.map(c => `<div class="pp-item" data-name="${esc(c.name)}">
+      <div class="pi-icon">🍪</div><div class="pi-info"><div class="pi-title">${esc(c.name)}</div>
+      <div class="pi-sub">${esc(c.domain)}${c.path !== "/" ? " · " + esc(c.path) : ""}${c.expires ? " · Session" : " · Persistent"}</div></div></div>`).join("")
+    : '<div class="empty-state">No cookies found</div>'}</div>
+    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="cookie-clear-all">Clear All Cookies</button></div>`;
+  body.querySelector("#cookie-clear-all")?.addEventListener("click", async () => {
+    await invoke("clear_cookies").catch(() => {});
+    showToast("Cookies cleared");
+    renderCookieInspector(body);
+  });
+}
+
+/* ─── Network Log Panel ─── */
+function renderNetworkLog(body: HTMLElement) {
+  const rows = settings?.pages_log || [];
+  body.innerHTML = `<div class="pp-list">${rows.length ? rows.slice(-200).reverse().map(r => `<div class="pp-item">
+    <div class="pi-icon">${r[1] === 'block' ? '🚫' : r[1] === 'img' ? '🖼' : r[1] === 'doc' ? '📄' : '🌐'}</div>
+    <div class="pi-info"><div class="pi-title">${esc(r[0]?.slice(0, 80) || "")}</div>
+    <div class="pi-sub">${r[1] || ''} ${r[2] || ''}</div></div></div>`).join("")
+  : '<div class="empty-state">No network activity captured yet.</div>'}</div>
+    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="nl-clear">Clear Log</button></div>`;
+  body.querySelector("#nl-clear")?.addEventListener("click", async () => {
+    if (settings) settings.pages_log = [];
+    await invoke("network_log", { rows: [], clear: true }).catch(() => {});
+    renderNetworkLog(body);
+    showToast("Log cleared");
+  });
+}
+
 /* ─── Menu Grid ─── */
 interface MenuItem { id: string; label: string; icon: string; action: () => void }
 function getMenuItems(): MenuItem[] {
@@ -417,23 +559,55 @@ function getMenuItems(): MenuItem[] {
     { id: "downloads", label: "Downloads", icon: "⬇", action: () => { invoke<DlItem[]>("list_downloads").then(d => { downloads = d; openPanel("Downloads", renderDownloads, "downloads"); }); } },
     { id: "scripts", label: "Scripts", icon: "📜", action: () => openPanel("Scripts", renderScripts, "scripts") },
     { id: "siteconfig", label: "Site config", icon: "🌐", action: () => openPanel("Site Configuration", renderSiteConfig, "siteconfig") },
+    { id: "cookies", label: "Cookies", icon: "🍪", action: () => openPanel("Cookies", renderCookieInspector, "cookies") },
     { id: "find", label: "Find in page", icon: "🔍", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "var p=prompt('Find:');if(p)window.find(p)" }); } },
-    { id: "desktop", label: desktopMode ? "Desktop site" : "Mobile site", icon: desktopMode ? "🖥" : "📱", action: () => { desktopMode = !desktopMode; showToast("Switched to " + (desktopMode ? "Desktop" : "Mobile")); if (settings) { settings.desktop_mode = desktopMode; saveSettings(); } if (activeId) invoke("navigate_tab", { id: activeId, url: activeId ? tabs.find(t => t.id === activeId)?.url || "" : "" }).catch(() => {}); } },
-    { id: "night", label: "Night mode", icon: "🌙", action: () => { nightMode = !nightMode; if (activeId) invoke("set_night_mode", { id: activeId, enabled: nightMode }).catch(() => {}); showToast(nightMode ? "Night mode on" : "Night mode off"); if (settings) { settings.night_mode = nightMode; saveSettings(); } } },
-    { id: "images", label: "Show images", icon: "🖼", action: () => { showImages = !showImages; showToast(showImages ? "Images shown" : "Images hidden"); if (settings) { settings.show_images = showImages; saveSettings(); } } },
-    { id: "sniffer", label: "Sniffer", icon: "📡", action: () => { if (activeId) invoke<string>("eval_tab", { id: activeId, js: "window.__viaSniff?JSON.stringify(window.__viaSniff()):'[]'" }).then(r => { try { const items = JSON.parse(r) as string[]; showToast(items.length + " resources found"); } catch { showToast("No resources"); } }); } },
-    { id: "viewsource", label: "View source", icon: "📄", action: () => { if (activeId) invoke<string>("eval_tab", { id: activeId, js: "document.documentElement.outerHTML" }).then(html => { const u = "https://localhost/view-source?html=" + encodeURIComponent((html||"").slice(0,20000)); showToast("Source captured (see console)"); console.log(html); }); } },
-    { id: "translate", label: "Translate", icon: "🌐", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "var s=document.createElement('script');s.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';document.head.appendChild(s);var d=document.createElement('div');d.id='google_translate_element';document.body.appendChild(d);" }); showToast("Translate loading…"); } },
-    { id: "fullscreen", label: "Full-screen", icon: "⛶", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?document.documentElement.requestFullscreen():document.body.requestFullscreen()" }).catch(() => showToast("Fullscreen unavailable")); } },
-    { id: "save", label: "Save page", icon: "💾", action: () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab) { invoke("eval_tab", { id: activeId, js: "document.documentElement.outerHTML" }).then(html => { invoke("save_page", { url: tab.url, html, title: tab.title }).then(() => showToast("Page saved")).catch(() => showToast("Save failed")); }); } } } },
-    { id: "print", label: "Print", icon: "🖨", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "window.print()" }); } },
-    { id: "openwith", label: "Open with…", icon: "↗", action: () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab) invoke("open_external", { url: tab.url }).catch(() => {}); } } },
-    { id: "addtohome", label: "Add to homepage", icon: "➕", action: () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab) { homepageShortcuts.push({ label: tab.title.slice(0, 16) || "Site", url: tab.url, icon: "🔗" }); renderHomepage(); showToast("Added to homepage"); } } } },
-    { id: "addbook", label: "Add bookmark", icon: "📑", action: () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab) invoke("add_bookmark", { url: tab.url, title: tab.title || tab.url, folder: "home" }).then(() => { bookmarks.push({ url: tab.url, title: tab.title || tab.url, folder: "home" }); showToast("Bookmark added"); }).catch(() => showToast("Already bookmarked")); } } },
-    { id: "cookies", label: "Cookies", icon: "🍪", action: () => { openSubPanel("Cookies", b => { invoke<{name:string;value:string}[]>("get_cookies").then(cookies => { b.innerHTML = `<div class="pp-list">${cookies.length ? cookies.map(c => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(c.name)}</div><div class="pi-sub">${esc(c.value.slice(0,60))}</div></div></div>`).join("") : '<div class="empty-state">No cookies</div>'}</div>`; }).catch(() => { b.innerHTML = '<div class="empty-state">Unable to read cookies</div>'; }); }, "cookies"); } },
+    { id: "desktop", label: desktopMode ? "Desktop site" : "Mobile site", icon: desktopMode ? "🖥" : "📱", action: () => { desktopMode = !desktopMode; if (settings) { settings.desktop_mode = desktopMode; saveSettings(); } if (activeId) { const t = tabs.find(t => t.id === activeId); if (t) invoke("navigate_tab", { id: activeId, url: t.url }); } showToast("Switched to " + (desktopMode ? "Desktop" : "Mobile")); } },
+    { id: "night", label: "Night mode", icon: "🌙", action: () => { nightMode = !nightMode; if (activeId) invoke("set_night_mode", { id: activeId, enabled: nightMode }).catch(() => {}); if (settings) { settings.night_mode = nightMode; saveSettings(); } showToast(nightMode ? "Night ON" : "Night OFF"); } },
+    { id: "addbook", label: "Bookmark page", icon: "➕", action: () => { if (!activeId) return; const t = tabs.find(t => t.id === activeId); if (!t) return; invoke("add_bookmark", { url: t.url, title: t.title, folder: "home" }).then(() => { bookmarks.push({ url: t.url, title: t.title, folder: "home" }); showToast("Bookmarked!"); }).catch(() => showToast("Already bookmarked")); } },
+    { id: "savepage", label: "Save page", icon: "💾", action: () => { if (!activeId) return; const t = tabs.find(t => t.id === activeId); if (!t) return; invoke<string>("eval_tab", { id: activeId, js: "document.documentElement.outerHTML" }).then((html) => {
+      invoke<string>("save_page", { url: t.url, html, title: t.title }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Save failed"));
+    }).catch(() => showToast("Save failed")); } },
+    { id: "viewsrc", label: "View source", icon: "📝", action: () => { if (!activeId) return; invoke<string>("eval_tab", { id: activeId, js: "document.documentElement.outerHTML" }).then((html) => {
+      createTab("data:text/html,<pre>" + encodeURIComponent(html.slice(0, 100000))).then(info => switchTab(info.id));
+    }).catch(() => showToast("Source unavailable")); } },
+    { id: "translate", label: "Translate", icon: "🌍", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "(function(){var s=document.createElement('script');s.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';document.head.appendChild(s);window.googleTranslateElementInit=function(){new google.translate.TranslateElement({pageLanguage:'auto'},'google_translate_element');};})()" }); showToast("Translate loading…"); } },
+    { id: "fullscreen", label: "Fullscreen", icon: "⛶", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?.()" }); } },
+    { id: "reader", label: "Reader mode", icon: "📖", action: () => { if (activeId) { const js = invoke<string>("reader_bundle").catch(() => ""); js.then(j => { if (j && activeId) invoke("eval_tab", { id: activeId, js: j }); }); showToast("Reader mode activated"); } } },
+    { id: "netlog", label: "Network log", icon: "📊", action: () => openPanel("Network Log", renderNetworkLog, "netlog") },
+    { id: "clear", label: "Clear data", icon: "🗑", action: () => { openPanel("Clear Data", renderClearData, "cleardata"); } },
     { id: "settings", label: "Settings", icon: "⚙", action: () => openPanel("Settings", renderSettings, "settings") },
+    { id: "about", label: "About", icon: "ℹ", action: () => openPanel("About", renderAbout, "about") },
   ];
 }
+
+function renderClearData(body: HTMLElement) {
+  body.innerHTML = `
+    <div class="set-section">
+      <div class="set-label">Clear Data</div>
+      <div class="set-row" data-clear="all"><div class="sr-text"><div class="sr-title">Clear all browsing data</div><div class="sr-desc">Cache, cookies, history</div></div></div>
+    </div>`;
+  body.querySelector("[data-clear='all']")?.addEventListener("click", async () => {
+    await invoke("clear_data").catch(() => {});
+    await invoke("clear_history").catch(() => {});
+    showToast("All data cleared");
+    closePanel();
+  });
+}
+
+function renderAbout(body: HTMLElement) {
+  body.innerHTML = `
+    <div style="text-align:center;padding:40px 20px">
+      <img src="/via-logo.svg" alt="Via" style="width:80px;margin-bottom:16px" />
+      <div style="font-size:18px;font-weight:600;color:#fff;margin-bottom:4px">Via Browser</div>
+      <div style="font-size:12px;color:#888;margin-bottom:24px">Version 7.2.1 · Windows</div>
+      <div style="font-size:12px;color:#888;line-height:1.8">
+        Tauri 2 + WebView2<br>
+        A fast, minimal, customizable browser.<br>
+        Inspired by the original Via Browser for Android.
+      </div>
+    </div>`;
+}
+
 function renderMenu(body: HTMLElement) {
   const items = getMenuItems();
   body.innerHTML = `<div class="mg" id="menu-grid">
@@ -449,11 +623,57 @@ function renderMenu(body: HTMLElement) {
   });
 }
 
+/* ─── Context Menu ─── */
+function initContextMenu() {
+  document.addEventListener("contextmenu", (e) => {
+    removeContextMenu();
+    const target = e.target as HTMLElement;
+    const link = target.closest("a[href]");
+    if (!link && !target.closest("img")) return;
+    e.preventDefault();
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    if (link) {
+      const href = link.getAttribute("href") || "";
+      const items = [
+        { label: "Open in new tab", action: () => createTab(href).then(i => switchTab(i.id)) },
+        { label: "Copy link address", action: () => navigator.clipboard.writeText(href).then(() => showToast("Copied")) },
+        { label: "Save link as…", action: () => invoke<string>("download_from_js", { url: href, filename: null }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Download failed")) },
+      ];
+      menu.innerHTML = items.map(i => `<div class="cm-item">${i.label}</div>`).join("");
+      menu.querySelectorAll(".cm-item").forEach((el, idx) => {
+        el.addEventListener("click", () => { items[idx].action(); removeContextMenu(); });
+      });
+    } else if (target.closest("img")) {
+      const img = target.closest("img") as HTMLImageElement;
+      const src = img.src || "";
+      const items = [
+        { label: "Open image in new tab", action: () => createTab(src).then(i => switchTab(i.id)) },
+        { label: "Copy image URL", action: () => navigator.clipboard.writeText(src).then(() => showToast("Copied")) },
+        { label: "Save image as…", action: () => invoke<string>("download_from_js", { url: src, filename: null }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Download failed")) },
+      ];
+      menu.innerHTML = items.map(i => `<div class="cm-item">${i.label}</div>`).join("");
+      menu.querySelectorAll(".cm-item").forEach((el, idx) => {
+        el.addEventListener("click", () => { items[idx].action(); removeContextMenu(); });
+      });
+    }
+    menu.style.left = e.clientX + "px";
+    menu.style.top = e.clientY + "px";
+    document.body.appendChild(menu);
+    contextMenu = menu;
+    setTimeout(() => document.addEventListener("click", removeContextMenu, { once: true }), 50);
+  });
+}
+function removeContextMenu() {
+  if (contextMenu) { contextMenu.remove(); contextMenu = null; }
+}
+
 /* ─── Homepage ─── */
 function renderHomepage() {
   const shortcutsEl = $("home-shortcuts");
-  shortcutsEl.innerHTML = homepageShortcuts.map(s =>
-    `<div class="sc" data-url="${esc(s.url)}"><img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44'><rect width='44' height='44' rx='8' fill='%231a1a1a'/><text x='22' y='28' font-size='20' text-anchor='middle' fill='%23fff'>${s.icon}</text></svg>" alt="${esc(s.label)}" /><span>${esc(s.label)}</span></div>`
+  const sc = homepageShortcuts.length ? homepageShortcuts : DEFAULT_SHORTCUTS;
+  shortcutsEl.innerHTML = sc.map(s =>
+    `<div class="sc" data-url="${esc(s.url)}"><img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='44' height='44'><rect width='44' height='44' rx='8' fill='%231a1a1a'/><text x='22' y='28' font-size='20' text-anchor='middle' fill='%23fff'>${encodeURIComponent(s.icon)}</text></svg>" alt="${esc(s.label)}" /><span>${esc(s.label)}</span></div>`
   ).join("");
   shortcutsEl.querySelectorAll(".sc[data-url]").forEach(el => {
     el.addEventListener("click", () => navigate(el.getAttribute("data-url")!));
@@ -478,18 +698,25 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   if (e.target instanceof HTMLInputElement) return;
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+    switch (e.key.toLowerCase()) {
+      case "t": e.preventDefault(); undoCloseTab(); break;
+      case "n": e.preventDefault(); incognitoMode = !incognitoMode; showToast(incognitoMode ? "Incognito ON" : "Incognito OFF"); break;
+    }
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
     switch (e.key.toLowerCase()) {
       case "t": e.preventDefault(); createTab().then(info => switchTab(info.id)); break;
       case "w": e.preventDefault(); if (activeId) closeTab(activeId); break;
       case "l": e.preventDefault(); { const inp = $("tb-input") as HTMLInputElement; inp.focus(); inp.select(); break; }
-      case "r": e.preventDefault(); if (activeId) invoke("navigate_tab", { id: activeId, url: tabs.find(t => t.id === activeId)?.url || "" }).catch(() => {}); break;
+      case "r": e.preventDefault(); if (activeId) { const t = tabs.find(t => t.id === activeId); if (t) invoke("navigate_tab", { id: activeId, url: t.url }); } break;
       case "f": e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "var p=prompt('Find:');if(p)window.find(p)" }); break;
       case "d": e.preventDefault(); getMenuItems().find(m => m.id === "addbook")?.action(); break;
       case "h": e.preventDefault(); getMenuItems().find(m => m.id === "history")?.action(); break;
       case "j": e.preventDefault(); getMenuItems().find(m => m.id === "downloads")?.action(); break;
-      case "+": case "=": e.preventDefault(); textSize = Math.min(textSize + 0.25, 3.0); if (activeId) invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }); break;
-      case "-": e.preventDefault(); textSize = Math.max(textSize - 0.25, 0.5); if (activeId) invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }); break;
+      case "+": case "=": e.preventDefault(); textSize = Math.min(textSize + 0.25, 3.0); if (settings) settings.text_size = textSize; applyTextSize(); saveSettings(); break;
+      case "-": e.preventDefault(); textSize = Math.max(textSize - 0.25, 0.5); if (settings) settings.text_size = textSize; applyTextSize(); saveSettings(); break;
     }
   }
   if (e.altKey) {
@@ -497,7 +724,7 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "ArrowRight") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "history.forward()" }); }
   }
   if (e.key === "Escape" && overlay === "panel") closePanel();
-  if (e.key === "F5") { e.preventDefault(); if (activeId) invoke("navigate_tab", { id: activeId, url: tabs.find(t => t.id === activeId)?.url || "" }).catch(() => {}); }
+  if (e.key === "F5") { e.preventDefault(); if (activeId) { const t = tabs.find(t => t.id === activeId); if (t) invoke("navigate_tab", { id: activeId, url: t.url }); } }
   if (e.key === "F11") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?.()" }).catch(() => {}); }
 });
 
@@ -509,7 +736,15 @@ listen<TabInfo>("tab-url", async (ev) => {
   if (id === activeId) {
     ($q<HTMLInputElement>("#tb-input")).value = url || "";
     updateBackFwd();
+    // Add to history
+    if (url && url !== "about:blank" && !url.startsWith("data:")) {
+      const title = tab?.title || url;
+      invoke("add_history", { url, title }).catch(() => {});
+      historyItems.unshift({ url, title, ts: Math.floor(Date.now() / 1000) });
+    }
   }
+  // Save session on navigation
+  saveSession();
 });
 listen<{ id: number; title: string }>("tab-title", (ev) => {
   const tab = tabs.find(t => t.id === ev.payload.id);
@@ -564,7 +799,6 @@ listen<{ id: number; msg: string }>("via-msg", async (ev) => {
 
 /* ─── Boot ─── */
 async function boot() {
-  // load settings
   settings = await invoke<Settings>("get_settings").catch(() => null);
   if (settings) {
     searchEngine = settings.search_engine || "Google";
@@ -573,21 +807,50 @@ async function boot() {
     textSize = settings.text_size || 1;
     showImages = settings.show_images !== false;
     adblockOn = settings.adblock_enabled !== false;
-    restoreTabs = false; // will check session
-    if (settings.night_mode && activeId) invoke("set_night_mode", { id: activeId, enabled: true }).catch(() => {});
+    restoreTabs = settings.restore_tabs || false;
+    homepageShortcuts = (settings.homepage_shortcuts?.length) ? settings.homepage_shortcuts : [...DEFAULT_SHORTCUTS];
   }
   bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
   historyItems = await invoke<HistItem[]>("list_history").catch(() => []);
   downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
 
-  // render homepage
+  // Session restore
+  if (restoreTabs) {
+    const session = await invoke<SessionEntry[]>("restore_session").catch(() => []);
+    if (session.length) {
+      for (const entry of session.sort((a, b) => a.order - b.order)) {
+        const info = await createTab(entry.url !== "about:blank" ? entry.url : undefined, !entry.active);
+        if (entry.active) {
+          await switchTab(info.id);
+        }
+      }
+      if (activeId) {
+        const t = tabs.find(t => t.id === activeId);
+        if (t) {
+          $("home").classList.add("hidden");
+          ($q<HTMLInputElement>("#tb-input")).value = t.url;
+        }
+      }
+      updateTabCount();
+    }
+  }
+
   renderHomepage();
+  initContextMenu();
 
   // toolbar buttons
   $("tb-back").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.back()" }); });
   $("tb-fwd").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.forward()" }); });
   $("tb-reload").addEventListener("click", () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab) invoke("navigate_tab", { id: activeId, url: tab.url }).catch(() => {}); } });
-  $("tb-home").addEventListener("click", () => { if (activeId) { const tab = tabs.find(t => t.id === activeId); if (tab && tab.url !== "about:blank") { invoke("navigate_tab", { id: activeId, url: "about:blank" }).catch(() => {}); } } $("home").classList.remove("hidden"); });
+  $("tb-home").addEventListener("click", () => {
+    if (activeId) {
+      const tab = tabs.find(t => t.id === activeId);
+      if (tab && tab.url !== "about:blank") {
+        invoke("navigate_tab", { id: activeId, url: "about:blank" }).catch(() => {});
+      }
+    }
+    $("home").classList.remove("hidden");
+  });
   $("tb-menu").addEventListener("click", () => openPanel("Menu", renderMenu, "menu"));
   $("tb-tabs").addEventListener("click", () => {
     openPanel("Tabs (" + tabs.length + ")", b => {
@@ -634,8 +897,8 @@ async function boot() {
   });
   $("panel-backdrop").addEventListener("click", closePanel);
 
-  // history
-  invoke("add_history", { url: "", title: "" }).catch(() => {});
+  // Save session on close
+  window.addEventListener("beforeunload", () => { saveSession(); });
 
   console.log("[Via] Boot complete");
 }

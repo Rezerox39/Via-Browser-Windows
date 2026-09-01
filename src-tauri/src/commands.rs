@@ -885,3 +885,117 @@ pub fn parse_and_load_url(
     let engine = sstate.0.lock().unwrap().search_engine.clone();
     parse_address(&input, &engine)
 }
+
+// ===== Session Restore =====
+
+use std::collections::VecDeque;
+
+/// A serializable snapshot of a single open tab for session persistence.
+#[derive(Clone, Debug, Serialize, serde::Deserialize)]
+pub struct SessionEntry {
+    pub url: String,
+    pub title: String,
+    pub active: bool,
+    pub order: usize,
+}
+
+/// Persistent session store.
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+pub struct SessionData {
+    pub entries: Vec<SessionEntry>,
+    pub version: u32,
+}
+
+/// Stack of recently closed tabs (for Ctrl+Shift+T undo).
+#[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
+pub struct ClosedTab {
+    pub url: String,
+    pub title: String,
+    pub ts: u64,
+}
+
+pub struct ClosedTabStack(pub Mutex<VecDeque<ClosedTab>>);
+
+pub struct SessionState(pub Mutex<SessionData>);
+
+fn session_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_config_dir().unwrap_or_default().join("via-session.json")
+}
+
+pub fn load_session(app: &tauri::AppHandle) -> SessionData {
+    let p = session_path(app);
+    std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default()
+}
+
+pub fn persist_session(app: &tauri::AppHandle, s: &SessionData) {
+    let p = session_path(app);
+    if let Some(dir) = p.parent() { let _ = std::fs::create_dir_all(dir); }
+    let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
+}
+
+#[tauri::command]
+pub fn save_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SessionState>,
+    entries: Vec<SessionEntry>,
+) -> Result<(), String> {
+    let mut s = state.0.lock().unwrap();
+    s.entries = entries;
+    s.version = 1;
+    persist_session(&app, &s);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn restore_session(
+    state: tauri::State<'_, SessionState>,
+) -> Vec<SessionEntry> {
+    state.0.lock().unwrap().entries.clone()
+}
+
+#[tauri::command]
+pub fn clear_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SessionState>,
+) -> Result<(), String> {
+    let mut s = state.0.lock().unwrap();
+    s.entries.clear();
+    persist_session(&app, &s);
+    Ok(())
+}
+
+// ===== Closed-tab stack =====
+
+#[tauri::command]
+pub fn push_closed_tab(
+    state: tauri::State<'_, ClosedTabStack>,
+    url: String,
+    title: String,
+) -> Result<(), String> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut stack = state.0.lock().unwrap();
+    stack.push_front(ClosedTab { url, title, ts });
+    // Keep max 50 recently closed tabs.
+    stack.truncate(50);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn pop_closed_tab(
+    state: tauri::State<'_, ClosedTabStack>,
+) -> Option<ClosedTab> {
+    state.0.lock().unwrap().pop_front()
+}
+
+#[tauri::command]
+pub fn list_closed_tabs(
+    state: tauri::State<'_, ClosedTabStack>,
+) -> Vec<ClosedTab> {
+    state.0.lock().unwrap().iter().cloned().collect()
+}

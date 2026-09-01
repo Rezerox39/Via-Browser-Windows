@@ -8,7 +8,7 @@ mod settings;
 use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
 
-use commands::{BrowserState, SettingsState};
+use commands::{BrowserState, ClosedTabStack, SessionState, SettingsState};
 use features::StoreState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,17 +26,23 @@ pub fn run() {
             handle.manage(SettingsState(Mutex::new(loaded)));
             handle.manage(StoreState(Mutex::new(features::load_store(&handle))));
 
+            // Session restore state
+            let session = commands::load_session(&handle);
+            handle.manage(SessionState(Mutex::new(session)));
+            handle.manage(ClosedTabStack(Mutex::new(std::collections::VecDeque::new())));
+
             // Keep every tab webview above the HTML bottom nav bar when the
             // window is resized (native webviews don't follow CSS layout).
             if let Some(win) = app.get_webview_window("main") {
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
-                    // Resize + HiDPI scale changes + fullscreen toggles all
-                    // require re-calculating the child webview bounds. The
-                    // handler is safe no-ops when the window is transitioning.
                     match event {
                         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                             commands::relayout_tabs(&handle);
+                        }
+                        WindowEvent::CloseRequested { api, .. } => {
+                            // On window close, we could save session here if needed.
+                            // For now, the frontend handles it before the window closes.
                         }
                         _ => {}
                     }
@@ -67,6 +73,13 @@ pub fn run() {
             commands::set_night_mode,
             commands::search_suggest,
             commands::parse_and_load_url,
+            // session restore
+            commands::save_session,
+            commands::restore_session,
+            commands::clear_session,
+            commands::push_closed_tab,
+            commands::pop_closed_tab,
+            commands::list_closed_tabs,
             // features
             features::add_bookmark,
             features::remove_bookmark,
@@ -99,6 +112,10 @@ pub fn run() {
             features::export_backup,
             features::import_backup,
             features::import_latest_backup,
+            // homepage shortcuts
+            features::list_homepage_shortcuts,
+            features::save_homepage_shortcuts,
+            // reader
             reader::reader_bundle,
             reader::reader_close,
         ])

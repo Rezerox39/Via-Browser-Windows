@@ -706,3 +706,29 @@ fn import_via(
     }
     Ok(())
 }
+
+// ===== Homepage Shortcuts Persistence =====
+
+use crate::settings::HomeShortcut;
+
+#[tauri::command]
+pub fn list_homepage_shortcuts(
+    state: tauri::State<'_, crate::commands::SettingsState>,
+) -> Vec<HomeShortcut> {
+    state.0.lock().unwrap().homepage_shortcuts.clone()
+}
+
+#[tauri::command]
+pub fn save_homepage_shortcuts(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::commands::SettingsState>,
+    shortcuts: Vec<HomeShortcut>,
+) -> Result<(), String> {
+    {
+        let mut s = state.0.lock().unwrap();
+        s.homepage_shortcuts = shortcuts;
+    }
+    let settings = state.0.lock().unwrap().clone();
+    crate::commands::persist_settings(&app, &settings);
+    Ok(())
+}

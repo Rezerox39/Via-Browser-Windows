@@ -1,95 +1,137 @@
-# Testing Matrix — Via Browser Windows PC
+# Via Browser Windows — Parity Matrix & Testing
 
-## Automated (Linux sandbox, every commit)
+## Parity Matrix
+
+| Feature | Status | Evidence |
+|---------|--------|----------|
+| **Navigation** | REAL | URL/search routing via `parse_address()`, `wv.navigate()`, back/forward, reload, history integration |
+| **Tab creation/switching** | REAL | Independent WebView2 child webviews per tab, `show_tab()`/`hide_tab()` |
+| **Tab close/undo** | REAL | Close via `close_tab()`, undo via closed-tab stack `pop_closed_tab` |
+| **Session restore** | REAL | `save_session()`/`restore_session()` persist tab list; restore on boot when enabled |
+| **Ad blocking (URL+cosmetic)** | REAL | 3142 EasyList rules in `adblock.rs`, fetch/XHR blocking, cosmetic CSS hiding in `init.rs` |
+| **Night mode** | REAL | Injects CSS via `wv.eval()` on all tabs; toggles persist |
+| **Text size / zoom** | REAL | Runtime zoom via `eval_tab` on toggle, not just page load |
+| **Download filename** | REAL | `probe_download_filename()` reads Content-Disposition; `real_filename()` parses query params; collision handling with `(1)` suffix |
+| **Download from JS** | REAL | `download_from_js()` streams via reqwest, reads Content-Disposition from same response |
+| **Blob download** | REAL | `save_blob_download()` handles page-local blob/data URIs |
+| **Export/Import backup** | REAL | Versioned `.via` JSON with store + settings; import validates |
+| **Clear data** | REAL | `clear_all_browsing_data()` on all webviews |
+| **Bookmarks** | REAL | Add/remove/search, folder navigation, persistence via `features::Store` |
+| **History** | REAL | Auto-record on navigation, search, 2000 item limit, persistence |
+| **Downloads panel** | REAL | Live progress from `download-progress` events, saved history, completion status |
+| **QR scan from image** | REAL (PARTIAL on Windows) | `rfd` file picker + `image` crate + `rqrr` decoder; cross-compiled successfully; requires Windows camera test for "Scan with camera" |
+| **QR scan from clipboard** | REAL (PARTIAL on Windows) | `arboard` clipboard image read + `rqrr`; cross-compiled; text clipboard fallback via PowerShell |
+| **QR camera capture** | UNAVAILABLE | WebView2 doesn't expose camera to Rust; would require Windows Media Foundation via `windows` crate; image-file scanner is the workaround |
+| **Password manager (save)** | PARTIAL | `keyring` crate with Windows Credential Manager backend; save/get/delete wired to IPC; requires Windows test to verify Credential Manager integration |
+| **Password manager (fill)** | PARTIAL | Injects credentials into active `<input>` via `eval_tab`; user must click target field first; origin-scoping via `via.{host}` service key |
+| **Password manager (export)** | REMOVED | Encrypted export not implemented to avoid shipping insecure placeholder; blocked with clear error message |
+| **Toolbar customization** | REAL | `ToolbarLayout` in settings JSON; placement (top/bottom), show/hide buttons, restore defaults; applied on boot |
+| **Context menus** | REAL | Right-click on links: open/copy/save; on images: open/copy/save |
+| **Site configuration** | PARTIAL | Per-site adblock/UA override shown for current host; only checked at navigation time, not mid-browse |
+| **Cookie inspector** | PARTIAL | Lists cookies from all webviews with name/domain/path; clear-all works; per-cookie deletion not implemented |
+| **Reader mode** | REAL | Readability.js + readerable.js + reader.css bundled from APK; activates via menu; renders in-page |
+| **Network log** | REAL | `init.rs` captures via `__viaSniff`; displays in panel with type/URL |
+| **Search suggestions** | COSMETIC | Toggle exists but `search_suggest` command not wired to frontend typing; only local history search |
+| **Show images toggle** | PARTIAL | CSS injection hides images at page load; no runtime toggle for already-loaded pages |
+| **User-agent switch** | PARTIAL | `resolve_ua()` returns correct UA; applied at tab creation; runtime change requires reload |
+| **Incognito mode** | COSMETIC | Toggle exists in UI; no actual private-browsing isolation implemented |
+| **QR scanner (camera)** | UNAVAILABLE | Requires Windows Media Foundation capture; image/clipboard scanner is the workaround |
+| **Password manager (import/export)** | REMOVED | Not implemented; no fake control exposed |
+| **Saved pages panel** | PARTIAL | `save_page()` saves HTML to Downloads; no dedicated saved-pages list panel |
+| **Resource sniffer panel** | PARTIAL | `__viaMedia` captures URLs; only shown as toast count, no full panel |
+| **Homepage shortcuts persistence** | REAL | `list_homepage_shortcuts`/`save_homepage_shortcuts` in Rust settings; survives restart |
+| **Error page for nav failures** | PARTIAL | `assets/error.html` bundled but not wired to WebView2 navigation errors |
+| **About page** | REAL | Via branding with logo in panel |
+| **Keyboard shortcuts** | REAL | Ctrl+T/W/L/R/F/D/H/J, Ctrl+Shift+T/N, Ctrl+/-, Alt+Left/Right, F5/F11, Escape |
+
+## Automated Tests (Linux sandbox)
 
 | Command | What it validates |
 |---|---|
-| `npx tsc --noEmit` | Type-checks all TypeScript (IPC calls match Rust signatures) |
-| `npm run build` | Vite bundles `src/main.ts` → `dist/assets/index-*.js` + CSS |
-| `cargo xwin check --target x86_64-pc-windows-msvc` | Rust compiles against all frontend command/event names |
-| `node scripts/smoke-test.mjs` | Headless JSDOM: verifies static HTML containers exist, panel open/close, menu renders >10 items, IPC event listeners registered (`download-started`, `download-progress`, `tab-url`, `tab-title`, `via-msg`, `new-window-request`), keyboard shortcut support. |
-| `python3` Content-Disposition parser test | Validates filename extraction from `filename="x"` / `filename*=UTF-8''x` / raw `filename=x` including percent-encoded Unicode. |
+| `npx tsc --noEmit` | TypeScript type-checks (IPC matches Rust signatures) |
+| `npm run build` | Vite bundles to `dist/` |
+| `cargo xwin check --target x86_64-pc-windows-msvc` | Rust compiles with all deps including keyring, rqrr, image, rfd, arboard |
+| `node scripts/smoke-test.mjs` | Headless JSDOM: containers, menu, panels, IPC listeners, bookmarks, settings |
+| Build: `bash scripts/build-windows.sh` | Full cross-compile: exe + NSIS installer |
 
-## Windows manual testing (requires actual `via-browser-win.exe`)
+## Windows Manual Test Checklist
 
 ### Navigation & toolbar
-- [ ] Open app → shows homepage with logo, search bar, shortcut tiles
-- [ ] Type a URL in address bar → loads page, address bar shows URL
-- [ ] Type a search query → opens in default search engine
-- [ ] Back / Forward / Reload buttons work and update state
+- [ ] Open app → homepage with logo, search bar, shortcut tiles
+- [ ] Type URL → loads page, address bar shows URL
+- [ ] Type search query → opens in default search engine
+- [ ] Back / Forward / Reload buttons work
 - [ ] Home button returns to homepage
-- [ ] Security indicator (🔒) shows for HTTPS sites
-- [ ] Alt+Left / Alt+Right navigation
-- [ ] F5 reload, F11 fullscreen, Escape closes panel
+- [ ] Security indicator (🔒) for HTTPS
+- [ ] Alt+Left/Right navigation, F5 reload, F11 fullscreen, Escape closes panel
+- [ ] Toolbar customization: top/bottom placement, show/hide buttons, persist on restart
 
 ### Tabs
-- [ ] Ctrl+T creates a new tab, Ctrl+W closes current, Ctrl+Shift+T would undo (if wired)
-- [ ] Tabs panel shows all open tabs, clicking switches
-- [ ] Close button on tab items removes tabs
-- [ ] Tab counter badge updates
+- [ ] Ctrl+T new tab, Ctrl+W close, Ctrl+Shift+T undo-close
+- [ ] Tabs panel shows all open tabs, click switches
+- [ ] Five independent tabs with separate browsing contexts
+- [ ] Close last tab shows homepage
+- [ ] Session restore on restart (if enabled)
 
-### Downloads — hard acceptance requirement
-- [ ] Click a `.apk` download link → saves with `filename.apk` (real name)
-- [ ] Click a GitHub release asset → saves with actual file name (not UUID)
-- [ ] Click a codeload archive (URL ends in `v1.0`, no `.tar.gz`) → saves with Content-Disposition name
-- [ ] Click an AWS-redirected asset (UUID in path) → saves with proper name from query params
-- [ ] Download panel shows progress bar, bytes, status
-- [ ] Unicode filename: link with `filename*=UTF-8''...` → saved correctly
-- [ ] Server with no Content-Disposition → fallback name from URL path or `.zip`
-- [ ] Collision handling: same filename → suffix `(1)`, `(2)` appended
+### Downloads
+- [ ] Click .apk link → saves with `filename.apk`
+- [ ] Click GitHub release asset → saves with actual name (not UUID)
+- [ ] Click codeload archive → saves with Content-Disposition name
+- [ ] Click AWS-redirected asset → saves with proper name from query params
+- [ ] Download panel shows progress, bytes, status
+- [ ] Unicode filename from Content-Disposition
+- [ ] Collision: same filename → `(1)`, `(2)` suffix
 
-### Bookmarks & history
-- [ ] Add bookmark from menu → appears in Bookmarks panel
-- [ ] Remove bookmark → disappears from list
-- [ ] Click bookmark → navigates to URL
-- [ ] History panel shows entries with timestamps
-- [ ] Search history filter works
+### QR Scanner
+- [ ] Scan from image file: PNG/JPG with QR code → decodes correctly
+- [ ] Scan from clipboard: copy image, paste → decodes
+- [ ] Scan from text clipboard: copy URL, scan → shows URL with Open/Copy
+- [ ] No auto-navigation without user confirmation
+- [ ] Cancel button works
+- [ ] Camera: (requires Windows machine with camera)
+
+### Password Manager
+- [ ] Save credentials for current site → stored in Windows Credential Manager
+- [ ] Fill credentials: click password field, then Fill → injects password
+- [ ] Delete credentials → removes from Credential Manager
+- [ ] Credentials don't appear in settings export, logs, or frontend state
+- [ ] Wrong origin rejected (service key scoped by host)
+
+### Toolbar Customization
+- [ ] Open toolbar panel from menu
+- [ ] Switch top/bottom placement → toolbar moves
+- [ ] Toggle buttons on/off → buttons appear/disappear
+- [ ] Restore defaults → resets to original layout
+- [ ] Restart app → layout persists
+
+### Panels
+- [ ] Every panel opens above a loaded webpage
+- [ ] Panels scroll, close with Escape/backdrop
+- [ ] Resize window → panels adapt
+- [ ] Context menu on links and images
 
 ### Settings
-- [ ] Search engine toggle cycles Google/Bing/DuckDuckGo/Baidu
-- [ ] Night mode toggle applies color inversion
-- [ ] Ad blocking toggle enables/disables
-- [ ] Desktop/Mobile UA toggle switches user-agent
-- [ ] Text size increase/decrease
-- [ ] Show images toggle
-- [ ] Export/Import `.via` backup files
-- [ ] Settings persist after restart
-
-### Scripts
-- [ ] Scripts panel lists installed scripts
-- [ ] Enable/disable scripts
-- [ ] Delete script removes it
-- [ ] Script injection works (test with a simple `document.title = 'test'`)
-
-### Site configuration
-- [ ] Site config panel lists per-site overrides
-- [ ] Remove site config
+- [ ] Search engine cycling persists after restart
+- [ ] Night mode applies CSS to all tabs
+- [ ] Text size zoom applies to active page
+- [ ] Ad blocking toggle changes behavior
+- [ ] User-Agent switch reloads with new UA
+- [ ] Clear data clears cache/cookies/history
 
 ### Keyboard shortcuts
-- [ ] Ctrl+T, Ctrl+W, Ctrl+L (address bar focus), Ctrl+R, Ctrl+F, Ctrl+D, Ctrl+H, Ctrl+J
-- [ ] Ctrl+Plus / Ctrl+Minus text zoom
-- [ ] F5 reload, F11 fullscreen
+- [ ] Ctrl+T, Ctrl+W, Ctrl+L, Ctrl+R, Ctrl+F, Ctrl+D, Ctrl+H, Ctrl+J
+- [ ] Ctrl+Shift+T (undo close), Ctrl+Shift+N (incognito toggle)
+- [ ] Ctrl+Plus/Minus (zoom), Alt+Left/Right (nav), F5, F11, Escape
 
-### In-browser toasts
-- [ ] "Download started" toast visible (not covered by native webview)
-- [ ] "Download complete" / "Download failed" toast visible
-- [ ] Bookmark added toast
-- [ ] Settings changed toast
+### Packaging
+- [ ] Fresh install from .exe runs correctly
+- [ ] NSIS installer completes without errors
+- [ ] Via logo in title bar (no anvil default)
+- [ ] App icon in taskbar
 
-### Branding
-- [ ] Via ribbon logo on homepage (blue/red/yellow SVG)
-- [ ] Via logo in taskbar/title bar (icon.ico)
-- [ ] NSIS installer uses Via branding, no default anvil
-- [ ] About page shows "Via Browser for Windows" + version
-
-### Persistence
-- [ ] Bookmarks survive restart
-- [ ] History survives restart
-- [ ] Settings survive restart
-- [ ] Open tabs session restore (if enabled)
-- [ ] Download records persist
-
-### Privacy
-- [ ] Incognito mode: no history recorded
-- [ ] Clear data: cache, cookies, history cleared
-- [ ] Per-site ad blocking works
+## Known Limitations (WebView2)
+- Camera capture: not exposed to Rust layer; requires Windows Media Foundation
+- Per-tab cookie isolation: WebView2 shares cookie jar across webviews
+- Runtime UA change: requires page reload (WebView2 sets UA at creation)
+- Show images toggle: only affects new page loads, not already-loaded pages
+- Error page: `error.html` bundled but not wired to WebView2 error events

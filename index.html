@@ -8,82 +8,91 @@
   <link rel="icon" type="image/png" href="/via-icon-144.png" />
 </head>
 <body>
-  <!-- Top bar: visible on homepage -->
-  <div id="topbar">
-    <div id="topbar-left">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-      <span id="topbar-title">Homepage</span>
-    </div>
-    <button id="topbar-qr" title="QR Scanner">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-        <path d="M3 7V3h4M17 3h4v4M3 17v4h4M17 21h4v-4"/>
-        <rect x="7" y="7" width="4" height="4" rx="0.5"/>
-        <rect x="13" y="7" width="4" height="4" rx="0.5"/>
-        <rect x="7" y="13" width="4" height="4" rx="0.5"/>
-        <rect x="13" y="13" width="2" height="2" rx="0.3"/>
-        <rect x="15" y="15" width="2" height="2" rx="0.3"/>
-      </svg>
-    </button>
-  </div>
-
-  <!-- Homepage content -->
+  <!-- Homepage -->
   <div id="home">
+    <div id="home-topbar">
+      <div id="home-topbar-left">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        <span>Homepage</span>
+      </div>
+      <button id="qr-btn" title="Scan QR code">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="24" height="24">
+          <path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/>
+          <path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/>
+          <rect x="7" y="7" width="4" height="4" rx="0.5"/><rect x="13" y="7" width="4" height="4" rx="0.5"/>
+          <rect x="7" y="13" width="4" height="4" rx="0.5"/>
+          <rect x="14" y="14" width="2" height="2"/><rect x="17" y="14" width="2" height="2"/>
+          <rect x="14" y="17" width="2" height="2"/><rect x="17" y="17" width="2" height="2"/>
+        </svg>
+      </button>
+    </div>
     <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
-    <div class="home-version">Via 7.2.1</div>
     <div id="home-search" role="button" tabindex="0">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
       <span>Search or enter URL</span>
     </div>
   </div>
 
-  <!-- URL bar (shown at top when editing) -->
-  <div id="url-overlay">
-    <div class="url-bar">
-      <input id="url-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
-      <button id="url-go" title="Go">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </button>
-      <button id="url-cancel">Cancel</button>
-    </div>
-  </div>
-
-  <!-- Bottom navigation bar — 5 Via buttons -->
-  <nav id="bottomNav">
-    <button id="nav-back" title="Back" disabled>
+  <!-- URL bar (visible when browsing) -->
+  <div id="url-bar" class="hidden">
+    <button id="url-back" title="Back" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
     </button>
-    <button id="nav-fwd" title="Forward" disabled>
+    <button id="url-fwd" title="Forward" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
     </button>
-    <button id="nav-home" title="Home">
+    <input id="url-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
+    <button id="url-go" title="Go">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+    </button>
+    <button id="url-home" title="Home">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+    </button>
+    <button id="url-tabs" title="Tabs">
+      <span id="url-tab-count">1</span>
+    </button>
+    <button id="url-menu" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </div>
+
+  <!-- Bottom Navigation (Via's 5 thin-stroke buttons) -->
+  <div id="bottom-nav">
+    <button id="nav-back" title="Back" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button id="nav-fwd" title="Forward" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button id="nav-home" title="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
     </button>
     <button id="nav-tabs" title="Tabs">
       <span id="nav-tab-count">1</span>
     </button>
     <button id="nav-menu" title="Menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-  </nav>
+  </div>
 
-  <!-- Bottom sheet menu overlay -->
+  <!-- Side menu (slides from right) -->
   <div id="menu-backdrop"></div>
-  <div id="bottom-sheet">
-    <div id="sheet-content">
-      <div id="sheet-grid"></div>
-      <div id="sheet-pagination"></div>
-    </div>
-    <div id="sheet-footer">
-      <button id="sheet-exit" title="Exit">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+  <div id="side-menu">
+    <div id="side-menu-grid"></div>
+    <div id="side-menu-pagination"></div>
+    <div id="side-menu-footer">
+      <button id="menu-exit" title="Exit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span>Exit</span>
       </button>
-      <button id="sheet-collapse" title="Collapse">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+      <button id="menu-collapse" title="Collapse">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="6 9 12 15 18 9"/></svg>
+        <span>Collapse</span>
       </button>
     </div>
   </div>
 
-  <!-- Panel overlay for sub-pages (bookmarks, history, settings, etc.) -->
+  <!-- Full-screen panel for sub-pages -->
   <div id="panel-backdrop"></div>
   <div id="panel">
     <div class="ph">
@@ -99,9 +108,8 @@
 
   <!-- Toast -->
   <div id="toast"></div>
-
   <!-- Context menu -->
-  <div id="context-menu" class="context-menu" style="display:none"></div>
+  <div id="context-menu" style="display:none"></div>
 
   <script type="module" src="/src/main.ts"></script>
 </body>

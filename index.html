@@ -8,44 +8,52 @@
   <link rel="icon" type="image/png" href="/via-icon-144.png" />
 </head>
 <body>
-  <!-- ===== TOOLBAR (Via's compact top bar) ===== -->
-  <header id="toolbar">
-    <button id="tb-back" title="Back" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
-    </button>
-    <button id="tb-fwd" title="Forward" disabled>
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-    </button>
-    <button id="tb-reload" title="Reload">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
-    </button>
-    <div id="tb-addr">
-      <span id="tb-sec" title="Secure connection">🔒</span>
-      <input id="tb-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
-      <button id="tb-addr-go" title="Go">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-      </button>
-    </div>
-    <button id="tb-home" title="Home">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M9 21V12h6v9"/></svg>
-    </button>
-    <button id="tb-menu" title="Menu">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
-    </button>
-    <button id="tb-tabs" title="Tabs"><span id="tb-tab-count">0</span></button>
-  </header>
+  <!-- No top toolbar — Via's navigation lives at the bottom -->
 
-  <!-- ===== WEBVIEW CONTAINER ===== -->
-  <main id="stage">
-    <div id="home">
-      <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
-      <div id="home-search">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
-        <input id="home-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
-      </div>
-      <div id="home-shortcuts"></div>
+  <!-- ===== HOMEPAGE (shown when no page is loaded) ===== -->
+  <div id="home">
+    <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
+    <div id="home-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="home-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
     </div>
-  </main>
+    <div id="home-shortcuts"></div>
+  </div>
+
+  <!-- ===== BOTTOM NAVIGATION BAR (Via's real nav) ===== -->
+  <nav id="bottomNav">
+    <button id="nav-back" title="Back" disabled>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>
+      <span>Back</span>
+    </button>
+    <button id="nav-fwd" title="Forward" disabled>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18l6-6-6-6"/></svg>
+      <span>Forward</span>
+    </button>
+    <button id="nav-url" title="Address bar" class="nav-url-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+      <span id="nav-url-text">Search or enter address</span>
+    </button>
+    <button id="nav-tabs" title="Tabs">
+      <span id="nav-tab-count">0</span>
+      <span>Tabs</span>
+    </button>
+    <button id="nav-menu" title="Menu">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+      <span>Menu</span>
+    </button>
+  </nav>
+
+  <!-- ===== URL EDIT OVERLAY (slides up from bottom when tapping address bar) ===== -->
+  <div id="url-overlay">
+    <div class="url-bar">
+      <input id="url-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
+      <button id="url-go" title="Go">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+      </button>
+      <button id="url-cancel" title="Cancel">Cancel</button>
+    </div>
+  </div>
 
   <!-- ===== PANEL OVERLAY SYSTEM ===== -->
   <div id="panel-backdrop"></div>

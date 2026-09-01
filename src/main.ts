@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-/* ─── Types ─── */
+/* ═══════════════════════════════════════════════
+   Types
+   ═══════════════════════════════════════════════ */
 type Tab = { id: number; url: string; title: string; active: boolean };
 type Settings = {
   homepage: string; search_engine: string; ua_mode: string; custom_ua: string;
@@ -20,9 +22,10 @@ type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
 type ActiveDl = { url: string; path: string; received: number; total: number; done: boolean; success?: boolean };
-type TabInfo = { id: number; url: string; title: string; loading: boolean; active: boolean };
-type SessionEntry = { url: string; title: string; active: boolean; order: number };
 type ClosedTab = { url: string; title: string; ts: number };
+type SessionEntry = { url: string; title: string; active: boolean; order: number };
+type ScriptItem = { id: string; name: string; match_urls: string; code: string; enabled: boolean };
+type SiteConf = { host: string; ua_mode: string; adblock_enabled: boolean };
 
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=",
@@ -30,14 +33,10 @@ const ENGINES: Record<string, string> = {
   Bing: "https://www.bing.com/search?q=",
   Baidu: "https://www.baidu.com/s?wd=",
 };
-const DEFAULT_SHORTCUTS: HomeShortcut[] = [
-  { label: "Google", url: "https://www.google.com", icon: "🔍" },
-  { label: "YouTube", url: "https://www.youtube.com", icon: "📺" },
-  { label: "GitHub", url: "https://github.com", icon: "💻" },
-  { label: "Twitter", url: "https://x.com", icon: "🐦" },
-];
 
-/* ─── State ─── */
+/* ═══════════════════════════════════════════════
+   State
+   ═══════════════════════════════════════════════ */
 let tabs: Tab[] = [];
 let activeId: number | null = null;
 let searchEngine = "Google";
@@ -46,8 +45,6 @@ let bookmarks: Bookmark[] = [];
 let historyItems: HistItem[] = [];
 let downloads: DlItem[] = [];
 let activeDl: ActiveDl[] = [];
-let overlay: "none" | "panel" | "url" = "none";
-let panelStack: string[] = [];
 let nightMode = false;
 let desktopMode = true;
 let textSize = 1.0;
@@ -55,58 +52,171 @@ let showImages = true;
 let adblockOn = true;
 let incognitoMode = false;
 let restoreTabs = false;
-let homepageShortcuts: HomeShortcut[] = [...DEFAULT_SHORTCUTS];
-let toolbarLayout: ToolbarLayout = { placement: "bottom", visible: ["back","fwd","url","tabs","menu"], compact_two_row: false };
-let contextMenu: HTMLElement | null = null;
-let activeBookmarkFolder = "";
+let sheetPage = 0;
+const SHEET_PAGE_SIZE = 12;
 
-/* ─── DOM Refs ─── */
+/* ═══════════════════════════════════════════════
+   DOM refs
+   ═══════════════════════════════════════════════ */
 const $ = (s: string) => document.getElementById(s) as HTMLElement;
-const $q = <T extends Element = HTMLElement>(s: string) => document.querySelector(s) as T;
-const toastEl = $q<HTMLElement>("#toast") as any;
 function showToast(msg: string) {
-  toastEl.textContent = msg;
-  toastEl.classList.add("show");
-  clearTimeout(toastEl._t);
-  toastEl._t = setTimeout(() => toastEl.classList.remove("show"), 2200);
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout((el as any)._t);
+  (el as any)._t = setTimeout(() => el.classList.remove("show"), 2400);
 }
 
-/* ─── Panel System ─── */
+/* ═══════════════════════════════════════════════
+   Via bottom sheet menu definition
+   (icons + labels match the APK menu grid)
+   ═══════════════════════════════════════════════ */
+interface MenuItem {
+  label: string;
+  icon: string; // inline SVG path(s)
+  action: () => void;
+  active?: () => boolean;
+}
+const MENU_ITEMS: MenuItem[] = [
+  {
+    label: "Bookmarks", icon: '<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>',
+    action: () => openPanel("Bookmarks", renderBookmarks, "bookmarks")
+  },
+  {
+    label: "History", icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+    action: () => openPanel("History", renderHistory, "history")
+  },
+  {
+    label: "Downloads", icon: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+    action: () => openPanel("Downloads", renderDownloads, "downloads")
+  },
+  {
+    label: "Saved pages", icon: '<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+    action: () => openPanel("Saved Pages", renderSavedPages, "saved")
+  },
+  {
+    label: "Night mode", icon: '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>',
+    action: () => { nightMode = !nightMode; showToast("Night mode " + (nightMode ? "on" : "off")); closeSheet(); refreshMenuState(); },
+    active: () => nightMode
+  },
+  {
+    label: "Find in page", icon: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+    action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "window.__t10?.openFinder?.()" }); closeSheet(); }
+  },
+  {
+    label: "Desktop mode", icon: '<rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+    action: () => { desktopMode = !desktopMode; showToast("Desktop mode " + (desktopMode ? "on" : "off")); closeSheet(); refreshMenuState(); },
+    active: () => desktopMode
+  },
+  {
+    label: "QR Scanner", icon: '<path d="M3 7V3h4M17 3h4v4M3 17v4h4M17 21h4v-4"/><rect x="7" y="7" width="4" height="4"/><rect x="13" y="7" width="4" height="4"/><rect x="7" y="13" width="4" height="4"/>',
+    action: () => { handleQR(); closeSheet(); }
+  },
+  {
+    label: "Incognito", icon: '<path d="M12 2C7 2 2 7 2 12s5 10 10 10 10-5 10-10S17 2 12 2z"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+    action: () => { incognitoMode = !incognitoMode; showToast(incognitoMode ? "Incognito mode" : "Normal mode"); closeSheet(); refreshMenuState(); },
+    active: () => incognitoMode
+  },
+  {
+    label: "Refresh", icon: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>',
+    action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "location.reload()" }); closeSheet(); }
+  },
+  {
+    label: "Share", icon: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>',
+    action: () => {
+      const tab = tabs.find(t => t.id === activeId);
+      if (tab) { navigator.clipboard.writeText(tab.url); showToast("URL copied"); }
+      closeSheet();
+    }
+  },
+  {
+    label: "Network log", icon: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    action: () => { settings && (settings.network_log = !settings.network_log); showToast("Network log " + (settings?.network_log ? "on" : "off")); closeSheet(); }
+  },
+  {
+    label: "Site settings", icon: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
+    action: () => openPanel("Site Settings", renderSiteConfig, "siteconfig")
+  },
+  {
+    label: "Customize", icon: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>',
+    action: () => openPanel("Settings", renderSettings, "settings")
+  },
+  {
+    label: "Extensions", icon: '<path d="M20 7h-4l-2-3H10L8 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/>',
+    action: () => openPanel("Extensions", renderExtensions, "extensions")
+  },
+  {
+    label: "Settings", icon: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.32 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>',
+    action: () => openPanel("Settings", renderSettings, "settings")
+  },
+  {
+    label: "Help", icon: '<circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    action: () => openPanel("About", renderAbout, "about")
+  },
+];
+
+function makeMenuIcon(path: string, filled = false): string {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
+
+/* ═══════════════════════════════════════════════
+   Panel system
+   ═══════════════════════════════════════════════ */
 function openPanel(title: string, renderFn: (body: HTMLElement) => void, kind: string) {
-  overlay = "panel";
-  panelStack = [kind];
+  closeSheet();
   $("panel-title").textContent = title;
   const body = $("panel-body");
   body.innerHTML = "";
   renderFn(body);
-  $("panel").classList.add("open");
+  $("panel").style.display = "flex";
   $("panel-backdrop").classList.add("open");
   hideActiveWebview();
-}
-function openSubPanel(title: string, renderFn: (body: HTMLElement) => void, kind: string) {
-  panelStack.push(kind);
-  $("panel-title").textContent = title;
-  const body = $("panel-body");
-  body.innerHTML = "";
-  renderFn(body);
+  $("topbar").style.display = "none";
+  $("home").classList.add("hidden");
 }
 function closePanel() {
-  overlay = "none";
-  panelStack = [];
-  $("panel").classList.remove("open");
+  $("panel").style.display = "none";
   $("panel-backdrop").classList.remove("open");
-  if (tabs.length > 0) showActiveWebview();
+  if (tabs.length > 0 && activeId) showActiveWebview();
+  if (tabs.length === 0 || !activeId) {
+    $("topbar").style.display = "";
+    $("home").classList.remove("hidden");
+  }
 }
-function showActiveWebview() {
-  if (activeId != null) invoke("show_tab", { id: activeId }).catch(() => {});
-}
-function hideActiveWebview() {
-  if (activeId != null) invoke("hide_tab", { id: activeId }).catch(() => {});
-}
+function showActiveWebview() { if (activeId != null) invoke("show_tab", { id: activeId }).catch(() => {}); }
+function hideActiveWebview() { if (activeId != null) invoke("hide_tab", { id: activeId }).catch(() => {}); }
 
-/* ─── URL Overlay ─── */
+/* ═══════════════════════════════════════════════
+   Bottom Sheet Menu
+   ═══════════════════════════════════════════════ */
+function buildSheetGrid() {
+  const grid = $("sheet-grid");
+  const start = sheetPage * SHEET_PAGE_SIZE;
+  const page = MENU_ITEMS.slice(start, start + SHEET_PAGE_SIZE);
+  grid.innerHTML = page.map(item => {
+    const active = item.active?.() ? " active" : "";
+    return `<button class="sheet-item${active}">${makeMenuIcon(item.icon)}<span>${item.label}</span></button>`;
+  }).join("");
+  grid.querySelectorAll(".sheet-item").forEach((el, i) => {
+    el.addEventListener("click", () => page[i].action());
+  });
+  // pagination
+  const pages = Math.ceil(MENU_ITEMS.length / SHEET_PAGE_SIZE);
+  $("sheet-pagination").innerHTML = Array.from({ length: pages }, (_, i) =>
+    `<div class="pg-dot${i === sheetPage ? ' active' : ''}" data-p="${i}"></div>`
+  ).join("");
+  $("sheet-pagination").querySelectorAll(".pg-dot").forEach(el => {
+    el.addEventListener("click", () => { sheetPage = parseInt(el.getAttribute("data-p")!); buildSheetGrid(); });
+  });
+}
+function refreshMenuState() { buildSheetGrid(); }
+function openSheet() { buildSheetGrid(); $("bottom-sheet").classList.add("open"); $("menu-backdrop").classList.add("open"); hideActiveWebview(); }
+function closeSheet() { $("bottom-sheet").classList.remove("open"); $("menu-backdrop").classList.remove("open"); if (activeId) showActiveWebview(); }
+
+/* ═══════════════════════════════════════════════
+   URL bar
+   ═══════════════════════════════════════════════ */
 function openUrlBar() {
-  overlay = "url";
   $("url-overlay").classList.add("open");
   const inp = $("url-input") as HTMLInputElement;
   if (activeId) {
@@ -117,548 +227,227 @@ function openUrlBar() {
   }
   inp.focus();
   inp.select();
+  hideActiveWebview();
 }
 function closeUrlBar() {
-  overlay = "none";
   $("url-overlay").classList.remove("open");
-  $("url-input").blur();
+  if (activeId) showActiveWebview();
 }
 function handleUrlGo() {
   const val = ($("url-input") as HTMLInputElement).value.trim();
   closeUrlBar();
   if (!val) return;
-  if (/^https?:\/\//i.test(val) || /^[a-z0-9-]+\.[a-z]/i.test(val) || val.includes("://")) {
+  if (/^https?:\/\//i.test(val) || /^[a-z0-9-]+\.[a-z]/i.test(val) || val.includes("://"))
     navigate(/^https?:\/\//i.test(val) ? val : "https://" + val);
-  } else {
+  else
     navigate(ENGINES[searchEngine] + encodeURIComponent(val));
-  }
 }
 
-/* ─── Tab Management ─── */
-async function createTab(url?: string, hidden = false): Promise<TabInfo> {
-  const info = await invoke<TabInfo>("create_tab", { url: url || null });
-  tabs.push({ id: info.id, url: info.url, title: "New Tab", active: !hidden });
+/* ═══════════════════════════════════════════════
+   Tab management
+   ═══════════════════════════════════════════════ */
+function esc(s: string): string { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+async function createTab(url?: string, hide = false): Promise<Tab> {
+  const id = await invoke<number>("create_tab", { url: url || "about:blank", hidden: hide });
+  const tab: Tab = { id, url: url || "about:blank", title: "New tab", active: !hide };
+  tabs.push(tab);
   updateTabCount();
-  return info;
+  return tab;
 }
-async function switchTab(id: number) {
-  if (activeId === id) return;
-  for (const t of tabs) {
-    if (t.id !== id && t.active) {
-      t.active = false;
-      invoke("hide_tab", { id: t.id }).catch(() => {});
-    }
-  }
+async function closeTab(id: number) {
   const tab = tabs.find(t => t.id === id);
-  if (!tab) return;
-  tab.active = true;
-  activeId = id;
-  await invoke("show_tab", { id });
-  $("home").classList.add("hidden");
-  updateNavState();
-  updateTabCount();
-}
-async function closeTab(id: number, pushToStack = true) {
-  const tab = tabs.find(t => t.id === id);
-  if (tab && pushToStack) {
-    await invoke("push_closed_tab", { url: tab.url, title: tab.title }).catch(() => {});
-  }
+  if (tab) await invoke("push_closed_tab", { url: tab.url, title: tab.title });
   await invoke("close_tab", { id });
   tabs = tabs.filter(t => t.id !== id);
-  if (activeId === id) {
+  if (activeId === activeId) {
     activeId = tabs.length ? tabs[tabs.length - 1].id : null;
     if (activeId) await switchTab(activeId);
-    else { $("home").classList.remove("hidden"); updateNavState(); }
   }
   updateTabCount();
+  if (tabs.length === 0) showHomepage();
 }
-async function undoCloseTab() {
-  const closed = await invoke<ClosedTab | null>("pop_closed_tab").catch(() => null);
-  if (closed && closed.url) {
-    const info = await createTab(closed.url);
-    switchTab(info.id);
-  }
-}
-async function saveSession() {
-  if (!restoreTabs) return;
-  const entries: SessionEntry[] = tabs.map((t, i) => ({
-    url: t.url || "about:blank", title: t.title, active: t.id === activeId, order: i,
-  }));
-  await invoke("save_session", { entries }).catch(() => {});
+async function switchTab(id: number) {
+  for (const t of tabs) { t.active = false; }
+  const tab = tabs.find(t => t.id === id);
+  if (tab) tab.active = true;
+  activeId = id;
+  await invoke("select_tab", { id });
+  updateUrlDisplay();
+  updateTabCount();
+  hideTopbarAndHome();
 }
 function updateTabCount() {
-  $("nav-tab-count").textContent = String(tabs.length || 0);
+  const el = $("nav-tab-count");
+  el.textContent = String(tabs.length);
+  el.classList.toggle("active", tabs.length > 0);
 }
-function updateNavState() {
-  const hasTab = activeId != null;
-  ($("nav-back") as HTMLButtonElement).disabled = !hasTab;
-  ($("nav-fwd") as HTMLButtonElement).disabled = !hasTab;
-  if (hasTab) {
-    const tab = tabs.find(t => t.id === activeId);
-    const urlText = $("nav-url-text");
-    if (tab?.url && tab.url !== "about:blank") {
-      try {
-        const u = new URL(tab.url);
-        urlText.textContent = u.hostname + u.pathname.slice(0, 40);
-      } catch { urlText.textContent = tab.url.slice(0, 50); }
-    } else {
-      urlText.textContent = "Search or enter address";
-    }
-  } else {
-    $("nav-url-text").textContent = "Search or enter address";
-  }
+function hideTopbarAndHome() {
+  $("topbar").style.display = "none";
+  $("home").classList.add("hidden");
 }
-function navigate(url: string) {
-  if (!url) return;
-  if (activeId == null) {
-    createTab(url).then(info => {
-      switchTab(info.id);
-      $("home").classList.add("hidden");
-    });
-  } else {
-    invoke("navigate_tab", { id: activeId, url });
-    $("home").classList.add("hidden");
-  }
+function showHomepage() {
+  $("topbar").style.display = "";
+  $("home").classList.remove("hidden");
+  $("topbar-title").textContent = "Homepage";
+  activeId = null;
+}
+function updateUrlDisplay() {
+  const tab = tabs.find(t => t.id === activeId);
+  $("topbar-title").textContent = tab?.title || "New tab";
 }
 
-/* ─── Settings Panel ─── */
-function renderSettings(body: HTMLElement) {
-  body.innerHTML = `
-    <div class="set-section">
-      <div class="set-label">General</div>
-      <div class="set-row" data-set="engine"><div class="sr-text"><div class="sr-title">Search engine</div></div><div class="sr-val">${searchEngine}</div></div>
-      <div class="set-row" data-set="restore"><div class="sr-text"><div class="sr-title">Restore tabs on startup</div></div><div class="switch ${restoreTabs?"on":""}"></div></div>
-    </div>
-    <div class="set-section">
-      <div class="set-label">Appearance</div>
-      <div class="set-row" data-set="night"><div class="sr-text"><div class="sr-title">Night mode</div></div><div class="switch ${nightMode?"on":""}"></div></div>
-      <div class="set-row" data-set="textsize"><div class="sr-text"><div class="sr-title">Text size</div></div><div class="sr-val">${Math.round(textSize*100)}%</div></div>
-      <div class="set-row" data-set="showimages"><div class="sr-text"><div class="sr-title">Show images</div></div><div class="switch ${showImages?"on":""}"></div></div>
-    </div>
-    <div class="set-section">
-      <div class="set-label">Privacy</div>
-      <div class="set-row" data-set="adblock"><div class="sr-text"><div class="sr-title">Ad blocking</div></div><div class="switch ${adblockOn?"on":""}"></div></div>
-      <div class="set-row" data-set="desktop"><div class="sr-text"><div class="sr-title">User-Agent</div></div><div class="sr-val">${settings?.ua_mode || "Default"}</div></div>
-    </div>
-    <div class="set-section">
-      <div class="set-label">Data</div>
-      <div class="set-row" data-set="cleardata"><div class="sr-text"><div class="sr-title">Clear data</div></div></div>
-      <div class="set-row" data-set="export"><div class="sr-text"><div class="sr-title">Export settings</div></div><div class="sr-val">.via</div></div>
-      <div class="set-row" data-set="import"><div class="sr-text"><div class="sr-title">Import settings</div></div><div class="sr-val">.via</div></div>
-    </div>
-    <div class="set-section">
-      <div class="set-label">About</div>
-      <div class="set-row"><div class="sr-text"><div class="sr-title">Via</div><div class="sr-desc">Version 7.2.1 · Windows</div></div></div>
-    </div>`;
-  body.querySelectorAll(".set-row[data-set]").forEach(el => {
-    el.addEventListener("click", () => handleSetting(el.getAttribute("data-set")!));
-  });
-}
-async function handleSetting(key: string) {
-  switch (key) {
-    case "engine": {
-      const engines = Object.keys(ENGINES);
-      searchEngine = engines[(engines.indexOf(searchEngine) + 1) % engines.length];
-      if (settings) settings.search_engine = searchEngine;
-      openSubPanel("Settings", renderSettings, "settings");
-      showToast("Search: " + searchEngine);
-      await saveSettings();
-      break;
-    }
-    case "restore":
-      restoreTabs = !restoreTabs;
-      if (settings) settings.restore_tabs = restoreTabs;
-      openSubPanel("Settings", renderSettings, "settings");
-      await saveSettings();
-      break;
-    case "night":
-      nightMode = !nightMode;
-      if (settings) settings.night_mode = nightMode;
-      if (activeId) invoke("set_night_mode", { id: activeId, enabled: nightMode }).catch(() => {});
-      openSubPanel("Settings", renderSettings, "settings");
-      await saveSettings();
-      break;
-    case "textsize":
-      textSize = textSize >= 2.0 ? 0.5 : textSize + 0.25;
-      if (settings) settings.text_size = textSize;
-      if (activeId) invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }).catch(() => {});
-      openSubPanel("Settings", renderSettings, "settings");
-      await saveSettings();
-      break;
-    case "showimages":
-      showImages = !showImages;
-      if (settings) settings.show_images = showImages;
-      openSubPanel("Settings", renderSettings, "settings");
-      await saveSettings();
-      break;
-    case "adblock":
-      adblockOn = !adblockOn;
-      if (settings) settings.adblock_enabled = adblockOn;
-      openSubPanel("Settings", renderSettings, "settings");
-      await saveSettings();
-      break;
-    case "desktop": {
-      if (!settings) break;
-      const modes = ["Default", "Desktop", "Mobile", "Via", "Custom"];
-      settings.ua_mode = modes[(modes.indexOf(settings.ua_mode) + 1) % modes.length];
-      desktopMode = settings.ua_mode !== "Mobile";
-      openSubPanel("Settings", renderSettings, "settings");
-      showToast("UA: " + settings.ua_mode);
-      await saveSettings();
-      break;
-    }
-    case "cleardata":
-      await invoke("clear_data").then(() => showToast("Data cleared")).catch(() => showToast("Failed"));
-      break;
-    case "export":
-      await invoke<string>("export_backup").then(p => showToast("Exported: " + p.split(/[\\/]/).pop())).catch(() => showToast("Export failed"));
-      break;
-    case "import":
-      await invoke("import_backup").then(() => showToast("Imported!")).catch(() => showToast("Import failed"));
-      break;
-  }
-}
-async function saveSettings() {
-  if (settings) {
-    settings.night_mode = nightMode;
-    settings.desktop_mode = desktopMode;
-    settings.text_size = textSize;
-    settings.show_images = showImages;
-    settings.search_engine = searchEngine;
-    settings.restore_tabs = restoreTabs;
-    await invoke("set_settings", { s: settings }).catch(() => {});
-  }
-}
-
-/* ─── Bookmarks Panel ─── */
-function getBookmarkFolders(): string[] {
-  const folders = new Set<string>();
-  bookmarks.forEach(b => { if (b.folder) folders.add(b.folder); });
-  return Array.from(folders).sort();
-}
-function renderBookmarks(body: HTMLElement, filter = "", folder = "") {
-  activeBookmarkFolder = folder;
-  const f = filter.toLowerCase();
-  let filtered = bookmarks.filter(b => (!folder || b.folder === folder) && (!f || (b.title + " " + b.url).toLowerCase().includes(f)));
-  const folders = getBookmarkFolders();
-  body.innerHTML = `
-    <div class="pp-head"><input id="bm-search" placeholder="Search bookmarks…" value="${filter}">
-    ${folder ? `<button class="pp-folder-back" data-back-folder>← ${esc(folder)}</button>` : ""}</div>
-    ${folders.length && !folder ? `<div class="pp-section-header">Folders</div>
-    <div class="pp-folder-list">${folders.map(f => `<div class="pp-item" data-folder="${esc(f)}">
-      <div class="pi-icon">📁</div><div class="pi-info"><div class="pi-title">${esc(f)}</div>
-      <div class="pi-sub">${bookmarks.filter(b => b.folder === f).length} items</div></div></div>`).join("")}</div>` : ""}
-    <div class="pp-list">${filtered.length ? filtered.map(b => `<div class="pp-item" data-url="${esc(b.url)}">
-      <div class="pi-icon">🔖</div><div class="pi-info"><div class="pi-title">${esc(b.title || b.url)}</div>
-      <div class="pi-sub">${esc(b.url)}</div></div><div class="pi-action" data-rm="${esc(b.url)}">✕</div></div>`).join("") : '<div class="empty-state">No bookmarks</div>'}</div>
-    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="bm-add">+ Add Bookmark</button></div>`;
-  body.querySelector("#bm-search")?.addEventListener("input", (e) => renderBookmarks(body, (e.target as HTMLInputElement).value, activeBookmarkFolder));
-  body.querySelector("[data-back-folder]")?.addEventListener("click", () => renderBookmarks(body, filter, ""));
-  body.querySelectorAll("[data-folder]").forEach(el => el.addEventListener("click", () => renderBookmarks(body, filter, el.getAttribute("data-folder")!)));
-  body.querySelectorAll(".pp-item[data-url]").forEach(el => el.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).classList.contains("pi-action")) return;
-    closePanel(); navigate(el.getAttribute("data-url")!);
-  }));
-  body.querySelectorAll(".pi-action[data-rm]").forEach(el => el.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const url = el.getAttribute("data-rm")!;
-    await invoke("remove_bookmark", { url });
-    bookmarks = bookmarks.filter(b => b.url !== url);
-    renderBookmarks(body, body.querySelector<HTMLInputElement>("#bm-search")?.value || "", activeBookmarkFolder);
-    showToast("Bookmark removed");
-  }));
-  body.querySelector("#bm-add")?.addEventListener("click", async () => {
-    if (!activeId) return;
-    const t = tabs.find(t => t.id === activeId);
-    if (!t) return;
-    await invoke("add_bookmark", { url: t.url, title: t.title, folder: activeBookmarkFolder || "home" }).then(() => {
-      bookmarks.push({ url: t.url, title: t.title, folder: activeBookmarkFolder || "home" });
-      renderBookmarks(body, "", activeBookmarkFolder);
-      showToast("Bookmark added");
-    }).catch(() => showToast("Already bookmarked"));
-  });
-}
-
-/* ─── History Panel ─── */
-function renderHistory(body: HTMLElement, filter = "") {
-  const f = filter.toLowerCase();
-  const filtered = historyItems.slice(0, 300).filter(h => !f || (h.title + " " + h.url).toLowerCase().includes(f));
-  body.innerHTML = `<div class="pp-head"><input id="hi-search" placeholder="Search history…" value="${filter}"></div>
-    <div class="pp-list">${filtered.length ? filtered.map(h => {
-      const age = Date.now() / 1000 - h.ts;
-      const ageStr = age < 86400 ? "Today" : age < 172800 ? "Yesterday" : new Date(h.ts * 1000).toLocaleDateString();
-      return `<div class="pp-item" data-url="${esc(h.url)}"><div class="pi-icon">🕐</div>
-        <div class="pi-info"><div class="pi-title">${esc(h.title || h.url)}</div>
-        <div class="pi-sub">${ageStr} · ${esc(h.url.slice(0, 60))}</div></div></div>`;
-    }).join("") : '<div class="empty-state">No history</div>'}</div>`;
-  body.querySelector("#hi-search")?.addEventListener("input", (e) => renderHistory(body, (e.target as HTMLInputElement).value));
-  body.querySelectorAll(".pp-item[data-url]").forEach(el => el.addEventListener("click", () => { closePanel(); navigate(el.getAttribute("data-url")!); }));
-}
-
-/* ─── Downloads Panel ─── */
-function renderDownloads(body: HTMLElement) {
-  body.innerHTML = `<div class="pp-list" id="dl-list"></div>`;
-  refreshDlList(body.querySelector<HTMLElement>("#dl-list")!);
-}
-function refreshDlList(listEl: HTMLElement) {
-  const rows = [...activeDl].reverse().map(d => {
-    const name = d.path.split(/[\\/]/).pop() || d.url.split("?")[0].split("/").pop() || "file";
-    const pct = d.total > 0 ? Math.min(100, Math.round(d.received / d.total * 100)) : 0;
-    const stat = d.done ? (d.success !== false ? "Complete" : "Failed") : d.total > 0 ? `${fmtBytes(d.received)} / ${fmtBytes(d.total)}` : "Downloading…";
-    const cls = d.done ? (d.success !== false ? "dl-done" : "dl-fail") : "";
-    const barCls = d.done ? (d.success !== false ? "done" : "fail") : "";
-    return `<div class="dl-item ${cls}"><div class="dl-name">${esc(name)}</div><div class="dl-meta">${stat}</div>
-      <div class="dl-bar ${barCls}"><i style="width:${pct}%"></i></div></div>`;
-  });
-  const savedRows = downloads.map(d => `<div class="dl-item dl-done"><div class="dl-name">${esc(d.title || d.path.split(/[\\/]/).pop() || "file")}</div>
-    <div class="dl-meta">Saved</div><div class="dl-bar done"><i></i></div></div>`);
-  listEl.innerHTML = [...rows, ...savedRows].join("") || '<div class="empty-state">No downloads</div>';
-}
-
-/* ─── Scripts / Site Config / Cookies / QR / Password / Toolbar ─── */
-function renderScripts(body: HTMLElement) {
-  const scripts = settings?.scripts || [];
-  body.innerHTML = `<div class="pp-list">${scripts.length ? scripts.map((sc, i) => `<div class="pp-item" data-idx="${i}">
-    <div class="pi-icon" style="font-size:18px">${sc.enabled ? "✓" : "—"}</div>
-    <div class="pi-info"><div class="pi-title">${esc(sc.name)}</div>
-    <div class="pi-sub">${esc(sc.match_urls || "*")}</div></div>
-    <div class="pi-action" data-rm="${i}">✕</div></div>`).join("") : '<div class="empty-state">No scripts</div>'}</div>
-    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="sc-add">+ New script</button></div>`;
-  body.querySelectorAll(".pi-action[data-rm]").forEach(el => el.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const idx = parseInt(el.getAttribute("data-rm")!);
-    const sc = scripts[idx];
-    if (sc) { await invoke("delete_script", { id: sc.id }).catch(() => {}); if (settings) settings.scripts = settings.scripts.filter(s => s.id !== sc.id); renderScripts(body); showToast("Script deleted"); }
-  }));
-}
-function renderSiteConfig(body: HTMLElement) {
-  const configs = settings?.sites || [];
-  body.innerHTML = `<div class="pp-list">${configs.length ? configs.map((c, i) => `<div class="pp-item" data-idx="${i}">
-    <div class="pi-icon">🌐</div><div class="pi-info"><div class="pi-title">${esc(c.host)}</div>
-    <div class="pi-sub">UA: ${c.ua_mode || "Default"} · AdBlock: ${c.adblock_enabled ? "On" : "Off"}</div></div>
-    <div class="pi-action" data-rm="${i}">✕</div></div>`).join("") : '<div class="empty-state">No site configurations</div>'}</div>`;
-  body.querySelectorAll(".pi-action[data-rm]").forEach(el => el.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const idx = parseInt(el.getAttribute("data-rm")!);
-    const c = configs[idx];
-    if (c) { await invoke("delete_site_config", { host: c.host }).catch(() => {}); if (settings) settings.sites = settings.sites.filter(s => s.host !== c.host); renderSiteConfig(body); }
-  }));
-}
-async function renderCookieInspector(body: HTMLElement) {
-  const cookies = await invoke<Array<{name:string;value:string;domain:string;path:string;expires:boolean}>>("get_cookies").catch(() => []);
-  body.innerHTML = `<div class="pp-list">${cookies.length ? cookies.map(c => `<div class="pp-item">
-    <div class="pi-icon">🍪</div><div class="pi-info"><div class="pi-title">${esc(c.name)}</div>
-    <div class="pi-sub">${esc(c.domain)}${c.path !== "/" ? " · " + esc(c.path) : ""}</div></div></div>`).join("") : '<div class="empty-state">No cookies</div>'}</div>
-    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="cookie-clear-all">Clear All</button></div>`;
-  body.querySelector("#cookie-clear-all")?.addEventListener("click", async () => { await invoke("clear_cookies").catch(() => {}); showToast("Cookies cleared"); renderCookieInspector(body); });
-}
-function renderNetworkLog(body: HTMLElement) {
-  const rows = settings?.pages_log || [];
-  body.innerHTML = `<div class="pp-list">${rows.length ? rows.slice(-200).reverse().map(r => `<div class="pp-item">
-    <div class="pi-icon">${r[1]==='block'?'🚫':r[1]==='img'?'🖼':'🌐'}</div>
-    <div class="pi-info"><div class="pi-title">${esc(r[0]?.slice(0,80)||"")}</div>
-    <div class="pi-sub">${r[1]||''} ${r[2]||''}</div></div></div>`).join("") : '<div class="empty-state">No network activity</div>'}</div>
-    <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="nl-clear">Clear</button></div>`;
-  body.querySelector("#nl-clear")?.addEventListener("click", async () => { if (settings) settings.pages_log = []; await invoke("network_log", { rows: [], clear: true }).catch(() => {}); renderNetworkLog(body); });
-}
-function renderQRScan(body: HTMLElement) {
-  body.innerHTML = `<div class="set-section"><div class="set-label">Scan QR Code</div>
-    <div class="set-row" data-qr="image"><div class="sr-text"><div class="sr-title">Scan from image file</div></div><div class="sr-val">📁</div></div>
-    <div class="set-row" data-qr="clipboard"><div class="sr-text"><div class="sr-title">Scan from clipboard</div></div><div class="sr-val">📋</div></div></div>
-    <div id="qr-result" style="padding:12px 16px"></div>`;
-  body.querySelector("[data-qr='image']")?.addEventListener("click", async () => {
-    const el = body.querySelector<HTMLElement>("#qr-result")!; el.innerHTML = '<div class="empty-state">Scanning…</div>';
-    try { const text = await invoke<string>("qr_pick_and_scan"); showQRResult(el, text); } catch (e: any) { el.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`; }
-  });
-  body.querySelector("[data-qr='clipboard']")?.addEventListener("click", async () => {
-    const el = body.querySelector<HTMLElement>("#qr-result")!; el.innerHTML = '<div class="empty-state">Reading…</div>';
-    try { const text = await invoke<string>("qr_scan_clipboard"); showQRResult(el, text); } catch (e: any) { el.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`; }
-  });
-}
-function showQRResult(el: HTMLElement, text: string) {
-  const isUrl = /^https?:\/\//i.test(text);
-  el.innerHTML = `<div class="pp-item" style="background:var(--bg3);margin-bottom:8px"><div class="pi-icon">${isUrl?"🔗":"📝"}</div>
-    <div class="pi-info"><div class="pi-title" style="word-break:break-all">${esc(text)}</div></div></div>
-    <div style="display:flex;gap:8px">${isUrl ? `<button class="mg-item" style="border:1px solid var(--bg4);flex:1" id="qr-open">Open</button>` : ""}
-    <button class="mg-item" style="border:1px solid var(--bg4);flex:1" id="qr-copy">Copy</button></div>`;
-  el.querySelector("#qr-open")?.addEventListener("click", () => { closePanel(); navigate(text); });
-  el.querySelector("#qr-copy")?.addEventListener("click", () => { navigator.clipboard.writeText(text).then(() => showToast("Copied")); });
-}
-
-/* ─── Menu Grid ─── */
-interface MenuItem { id: string; label: string; icon: string; action: () => void }
-function getMenuItems(): MenuItem[] {
-  return [
-    { id: "bookmarks", label: "Bookmarks", icon: "🔖", action: () => { invoke<Bookmark[]>("list_bookmarks").then(b => { bookmarks = b; openPanel("Bookmarks", b => renderBookmarks(b), "bookmarks"); }); } },
-    { id: "history", label: "History", icon: "🕐", action: () => { invoke<HistItem[]>("list_history").then(h => { historyItems = h; openPanel("History", b => renderHistory(b), "history"); }); } },
-    { id: "downloads", label: "Downloads", icon: "⬇", action: () => { invoke<DlItem[]>("list_downloads").then(d => { downloads = d; openPanel("Downloads", renderDownloads, "downloads"); }); } },
-    { id: "scripts", label: "Scripts", icon: "📜", action: () => openPanel("Scripts", renderScripts, "scripts") },
-    { id: "siteconfig", label: "Site config", icon: "🌐", action: () => openPanel("Site Configuration", renderSiteConfig, "siteconfig") },
-    { id: "cookies", label: "Cookies", icon: "🍪", action: () => openPanel("Cookies", b => renderCookieInspector(b), "cookies") },
-    { id: "qr", label: "Scan QR", icon: "📷", action: () => openPanel("Scan QR Code", renderQRScan, "qr") },
-    { id: "find", label: "Find in page", icon: "🔍", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "var p=prompt('Find:');if(p)window.find(p)" }); } },
-    { id: "night", label: "Night mode", icon: "🌙", action: () => { nightMode = !nightMode; if (activeId) invoke("set_night_mode", { id: activeId, enabled: nightMode }).catch(() => {}); if (settings) { settings.night_mode = nightMode; saveSettings(); } showToast(nightMode ? "Night ON" : "Night OFF"); } },
-    { id: "addbook", label: "Bookmark", icon: "➕", action: () => { if (!activeId) return; const t = tabs.find(t => t.id === activeId); if (!t) return; invoke("add_bookmark", { url: t.url, title: t.title, folder: "home" }).then(() => { bookmarks.push({ url: t.url, title: t.title, folder: "home" }); showToast("Bookmarked!"); }).catch(() => showToast("Already bookmarked")); } },
-    { id: "viewsrc", label: "View source", icon: "📝", action: () => { if (!activeId) return; invoke<string>("eval_tab", { id: activeId, js: "document.documentElement.outerHTML" }).then((html) => { createTab("data:text/html,<pre>" + encodeURIComponent(html.slice(0, 100000))).then(info => switchTab(info.id)); }).catch(() => showToast("Source unavailable")); } },
-    { id: "translate", label: "Translate", icon: "🌍", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "(function(){var s=document.createElement('script');s.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';document.head.appendChild(s);window.googleTranslateElementInit=function(){new google.translate.TranslateElement({pageLanguage:'auto'},'google_translate_element');};})()" }); showToast("Translate loading…"); } },
-    { id: "fullscreen", label: "Fullscreen", icon: "⛶", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?.()" }); } },
-    { id: "reader", label: "Reader mode", icon: "📖", action: () => { if (activeId) { invoke<string>("reader_bundle").then(j => { if (j && activeId) invoke("eval_tab", { id: activeId, js: j }); }); showToast("Reader mode activated"); } } },
-    { id: "netlog", label: "Network log", icon: "📊", action: () => openPanel("Network Log", renderNetworkLog, "netlog") },
-    { id: "clear", label: "Clear data", icon: "🗑", action: () => { invoke("clear_data").then(() => showToast("Data cleared")).catch(() => showToast("Failed")); } },
-    { id: "settings", label: "Settings", icon: "⚙", action: () => openPanel("Settings", renderSettings, "settings") },
-    { id: "about", label: "About", icon: "ℹ", action: () => openPanel("About", renderAbout, "about") },
-  ];
-}
-function renderMenu(body: HTMLElement) {
-  const items = getMenuItems();
-  body.innerHTML = `<div class="mg" id="menu-grid">${items.map(m => `<div class="mg-item" data-mid="${m.id}">
-    <div class="mg-icon">${m.icon}</div><div class="mg-label">${m.label}</div></div>`).join("")}</div>`;
-  $("menu-grid")!.querySelectorAll(".mg-item[data-mid]").forEach(el => {
-    el.addEventListener("click", () => { const item = items.find(m => m.id === el.getAttribute("data-mid")!); if (item) { closePanel(); item.action(); } });
-  });
-}
-function renderAbout(body: HTMLElement) {
-  body.innerHTML = `<div style="text-align:center;padding:32px 16px">
-    <img src="/via-logo.svg" alt="Via" style="width:64px;margin-bottom:12px" />
-    <div style="font-size:16px;font-weight:600;color:#fff;margin-bottom:4px">Via</div>
-    <div style="font-size:12px;color:#9f9f9f;margin-bottom:20px">Version 7.2.1 · Windows</div>
-    <div style="font-size:12px;color:#666;line-height:1.8">A fast, minimal, customizable browser.<br>Tauri 2 + WebView2</div></div>`;
-}
-
-/* ─── Context Menu ─── */
-function initContextMenu() {
-  document.addEventListener("contextmenu", (e) => {
-    removeContextMenu();
-    const link = (e.target as HTMLElement).closest?.("a[href]");
-    const img = (e.target as HTMLElement).closest?.("img") as HTMLImageElement | null;
-    if (!link && !img) return;
-    e.preventDefault();
-    const menu = document.createElement("div");
-    menu.className = "context-menu";
-    if (link) {
-      const href = link.getAttribute("href") || "";
-      const items = [
-        { label: "Open in new tab", action: () => createTab(href).then(i => switchTab(i.id)) },
-        { label: "Copy link address", action: () => navigator.clipboard.writeText(href).then(() => showToast("Copied")) },
-        { label: "Save link as…", action: () => invoke<string>("download_from_js", { url: href, filename: null }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Download failed")) },
-      ];
-      menu.innerHTML = items.map(i => `<div class="cm-item">${i.label}</div>`).join("");
-      menu.querySelectorAll(".cm-item").forEach((el, idx) => el.addEventListener("click", () => { items[idx].action(); removeContextMenu(); }));
-    } else if (img) {
-      const src = img.src || "";
-      const items = [
-        { label: "Open image", action: () => createTab(src).then(i => switchTab(i.id)) },
-        { label: "Copy image URL", action: () => navigator.clipboard.writeText(src).then(() => showToast("Copied")) },
-        { label: "Save image", action: () => invoke<string>("download_from_js", { url: src, filename: null }).then(p => showToast("Saved")).catch(() => showToast("Failed")) },
-      ];
-      menu.innerHTML = items.map(i => `<div class="cm-item">${i.label}</div>`).join("");
-      menu.querySelectorAll(".cm-item").forEach((el, idx) => el.addEventListener("click", () => { items[idx].action(); removeContextMenu(); }));
-    }
-    menu.style.left = e.clientX + "px"; menu.style.top = e.clientY + "px";
-    document.body.appendChild(menu); contextMenu = menu;
-    setTimeout(() => document.addEventListener("click", removeContextMenu, { once: true }), 50);
-  });
-}
-function removeContextMenu() { if (contextMenu) { contextMenu.remove(); contextMenu = null; } }
-
-/* ─── Homepage ─── */
-function renderHomepage() {
-  const sc = homepageShortcuts.length ? homepageShortcuts : DEFAULT_SHORTCUTS;
-  $("home-shortcuts").innerHTML = sc.map(s =>
-    `<div class="sc" data-url="${esc(s.url)}"><img src="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='42' height='42'><rect width='42' height='42' rx='8' fill='%232a2a2a'/><text x='21' y='27' font-size='18' text-anchor='middle' fill='%23fff'>${encodeURIComponent(s.icon)}</text></svg>" alt="${esc(s.label)}" /><span>${esc(s.label)}</span></div>`
-  ).join("");
-  $("home-shortcuts").querySelectorAll(".sc[data-url]").forEach(el => el.addEventListener("click", () => navigate(el.getAttribute("data-url")!)));
-}
-
-/* ─── Utilities ─── */
-function esc(s: string): string { return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
-function fmtBytes(n: number): string {
-  if (!n || n < 0) return "0 B";
-  const u = ["B","KB","MB","GB"]; let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return n.toFixed(i === 0 ? 0 : 1) + " " + u[i];
-}
-
-/* ─── Keyboard Shortcuts ─── */
-document.addEventListener("keydown", (e) => {
-  if (overlay === "url" && e.key === "Escape") { closeUrlBar(); return; }
-  if (overlay === "panel" && e.key === "Escape") { closePanel(); return; }
-  if (e.target instanceof HTMLInputElement) return;
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
-    if (e.key.toLowerCase() === "t") { e.preventDefault(); undoCloseTab(); }
+/* ═══════════════════════════════════════════════
+   Navigation
+   ═══════════════════════════════════════════════ */
+async function navigate(url: string) {
+  if (activeId) {
+    await invoke("navigate_tab", { id: activeId, url });
+    updateUrlDisplay();
     return;
   }
-  if ((e.ctrlKey || e.metaKey) && !e.shiftKey) {
-    switch (e.key.toLowerCase()) {
-      case "t": e.preventDefault(); createTab().then(info => switchTab(info.id)); break;
-      case "w": e.preventDefault(); if (activeId) closeTab(activeId); break;
-      case "l": e.preventDefault(); openUrlBar(); break;
-      case "r": e.preventDefault(); if (activeId) { const t = tabs.find(t => t.id === activeId); if (t) invoke("navigate_tab", { id: activeId, url: t.url }); } break;
-      case "f": e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "var p=prompt('Find:');if(p)window.find(p)" }); break;
-      case "d": e.preventDefault(); getMenuItems().find(m => m.id === "addbook")?.action(); break;
-      case "h": e.preventDefault(); getMenuItems().find(m => m.id === "history")?.action(); break;
-      case "j": e.preventDefault(); getMenuItems().find(m => m.id === "downloads")?.action(); break;
-      case "+": case "=": e.preventDefault(); textSize = Math.min(textSize + 0.25, 3.0); if (settings) settings.text_size = textSize; if (activeId) invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }); saveSettings(); break;
-      case "-": e.preventDefault(); textSize = Math.max(textSize - 0.25, 0.5); if (settings) settings.text_size = textSize; if (activeId) invoke("eval_tab", { id: activeId, js: `document.documentElement.style.zoom='${textSize}'` }); saveSettings(); break;
-    }
-  }
-  if (e.altKey) {
-    if (e.key === "ArrowLeft") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "history.back()" }); }
-    if (e.key === "ArrowRight") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "history.forward()" }); }
-  }
-  if (e.key === "F5") { e.preventDefault(); if (activeId) { const t = tabs.find(t => t.id === activeId); if (t) invoke("navigate_tab", { id: activeId, url: t.url }); } }
-  if (e.key === "F11") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?.()" }).catch(() => {}); }
-});
+  const tab = await createTab(url);
+  await switchTab(tab.id);
+}
 
-/* ─── IPC Listeners ─── */
-listen<TabInfo>("tab-url", async (ev) => {
-  const { id, url } = ev.payload;
-  const tab = tabs.find(t => t.id === id);
-  if (tab) tab.url = url;
-  if (id === activeId) {
-    updateNavState();
-    if (url && url !== "about:blank" && !url.startsWith("data:")) {
-      invoke("add_history", { url, title: tab?.title || url }).catch(() => {});
-      historyItems.unshift({ url, title: tab?.title || url, ts: Math.floor(Date.now() / 1000) });
-    }
+/* ═══════════════════════════════════════════════
+   Panel renderers
+   ═══════════════════════════════════════════════ */
+function renderBookmarks(body: HTMLElement) {
+  if (!bookmarks.length) {
+    body.innerHTML = '<div class="empty-state">No bookmarks</div>';
+    return;
   }
-  saveSession();
-});
-listen<{ id: number; title: string }>("tab-title", (ev) => {
-  const tab = tabs.find(t => t.id === ev.payload.id);
-  if (tab) tab.title = ev.payload.title;
-  if (ev.payload.id === activeId) document.title = ev.payload.title ? ev.payload.title + " — Via" : "Via";
-});
-listen<{ url: string }>("new-window-request", async (ev) => {
-  const u = ev.payload.url;
-  if (!u || u.startsWith("about:")) return;
-  const info = await createTab(u, true); switchTab(info.id); showToast("Opened in new tab");
-});
-listen<{ id: number | null; url: string; path: string; total?: number }>("download-started", (ev) => {
-  showToast("Download started…");
-  activeDl.push({ url: ev.payload.url, path: ev.payload.path, received: 0, total: ev.payload.total || 0, done: false });
-});
-listen<{ id: number | null; url: string; path: string; received?: number; total?: number; done?: boolean; success?: boolean }>("download-progress", (ev) => {
-  const d = ev.payload;
-  const existing = activeDl.find(x => x.url === d.url);
-  if (existing) { existing.received = d.received || existing.received; existing.total = d.total || existing.total; existing.done = !!d.done; if (d.success !== undefined) existing.success = d.success; }
-  else activeDl.push({ url: d.url, path: d.path, received: d.received || 0, total: d.total || 0, done: !!d.done, success: d.success });
-  if (d.done) showToast(d.success === false ? "Download failed" : "Download complete");
-  if (overlay === "panel" && panelStack[panelStack.length - 1] === "downloads") refreshDlList($q<HTMLElement>("#dl-list"));
-});
-listen<{ id: number; msg: string }>("via-msg", async (ev) => {
-  let arr: any[] = []; try { arr = JSON.parse(ev.payload.msg); } catch { return; }
-  const [action, data] = arr;
-  if ((action === "download" || action === "startDl") && data?.url)
-    invoke<string>("download_from_js", { url: data.url, filename: data.filename || null }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Download failed"));
-  else if (action === "saveBlob" && data?.url && data?.bytes)
-    invoke<string>("save_blob_download", { url: data.url, filename: data.filename || null, bytes: data.bytes }).then(p => showToast("Saved: " + p.split(/[\\/]/).pop())).catch(() => showToast("Failed"));
-  else if (action === "dlTotal" && data?.url && data?.len > 0) {
-    const dl = activeDl.find(x => x.url === data.url); if (dl) dl.total = data.len;
-  }
-});
+  body.innerHTML = '<div class="pp-list">' + bookmarks.map(b =>
+    `<div class="pp-item" data-url="${esc(b.url)}">
+      <div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg></div>
+      <div class="pi-info"><div class="pi-title">${esc(b.title)}</div><div class="pi-sub">${esc(b.url)}</div></div>
+    </div>`
+  ).join("") + "</div>";
+  body.querySelectorAll(".pp-item").forEach(el => {
+    el.addEventListener("click", () => {
+      const url = el.getAttribute("data-url")!;
+      closePanel(); navigate(url);
+    });
+  });
+}
+function renderHistory(body: HTMLElement) {
+  if (!historyItems.length) { body.innerHTML = '<div class="empty-state">No history</div>'; return; }
+  const grouped: Record<string, HistItem[]> = {};
+  historyItems.forEach(h => {
+    const d = new Date(h.ts * 1000).toISOString().slice(0, 10);
+    (grouped[d] = grouped[d] || []).push(h);
+  });
+  body.innerHTML = Object.entries(grouped).map(([date, items]) =>
+    `<div class="sec-title">${date}</div><div class="pp-list">` +
+    items.map(h =>
+      `<div class="pp-item" data-url="${esc(h.url)}">
+        <div class="pi-info"><div class="pi-title">${esc(h.title)}</div><div class="pi-sub" style="color:var(--accent)">${esc(h.url)}</div></div>
+      </div>`
+    ).join("") + "</div>"
+  ).join("");
+  body.querySelectorAll(".pp-item").forEach(el => {
+    el.addEventListener("click", () => { closePanel(); navigate(el.getAttribute("data-url")!); });
+  });
+}
+function renderDownloads(body: HTMLElement) {
+  if (!downloads.length) { body.innerHTML = '<div class="empty-state">No downloads</div>'; return; }
+  body.innerHTML = downloads.map(d =>
+    `<div class="dl-item">
+      <div class="dl-name">${esc(d.title)}</div>
+      <div class="dl-meta">${formatSize(d.size)} ${d.done ? "✓ Complete" : "In progress"}</div>
+      ${d.done ? `<div class="dl-actions"><button data-open="${esc(d.path)}">Open</button><button data-folder="${esc(d.path)}">Folder</button></div>` : ""}
+    </div>`
+  ).join("");
+  body.querySelectorAll("[data-open]").forEach(el => el.addEventListener("click", () => invoke("open_download", { path: el.getAttribute("data-open") })));
+  body.querySelectorAll("[data-folder]").forEach(el => el.addEventListener("click", () => invoke("reveal_download", { path: el.getAttribute("data-folder") })));
+}
+function renderSavedPages(body: HTMLElement) { body.innerHTML = '<div class="empty-state">No saved pages</div>'; }
+function renderExtensions(body: HTMLElement) { body.innerHTML = '<div class="empty-state">No extensions installed</div>'; }
+function renderAbout(body: HTMLElement) {
+  body.innerHTML = `<div style="text-align:center;padding:32px 16px">
+    <img src="/via-logo.svg" style="width:60px;margin-bottom:12px" />
+    <div style="font-size:18px;margin-bottom:4px">Via Browser</div>
+    <div style="font-size:12px;color:var(--fg-muted)">Version 7.2.1 · Windows Desktop</div>
+    <div style="font-size:12px;color:var(--fg-muted);margin-top:8px">Lightweight, fast, private browsing</div>
+  </div>`;
+}
 
-/* ─── Boot ─── */
+function renderSettings(body: HTMLElement) {
+  const s = settings;
+  if (!s) return;
+  body.innerHTML = `
+    <div class="mg-list">
+      <div class="sec-title">Basic</div>
+      <div class="mg-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Search engine<span class="chev"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><polyline points="9 18 15 12 9 6"/></svg></span></div>
+      <div class="mg-item" data-set="night"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg> Night mode <span class="switch${nightMode ? ' on' : ''}" style="margin-left:auto"></span></div>
+      <div class="mg-item" data-set="desktop"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> Desktop mode <span class="switch${desktopMode ? ' on' : ''}" style="margin-left:auto"></span></div>
+
+      <div class="sec-title">Customize</div>
+      <div class="mg-item" data-set="adblock"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Ad blocking <span class="switch${adblockOn ? ' on' : ''}" style="margin-left:auto"></span></div>
+      <div class="mg-item" data-set="img"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg> Show images <span class="switch${showImages ? ' on' : ''}" style="margin-left:auto"></span></div>
+      <div class="mg-item" data-set="suggest"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M16 12l-4-4-4 4"/><path d="M12 16V8"/></svg> Search suggestions <span class="switch${s.search_suggest ? ' on' : ''}" style="margin-left:auto"></span></div>
+      <div class="field"><label>Text size</label><input type="range" min="0.5" max="2" step="0.1" value="${textSize}" data-set="textsize" /></div>
+      <div class="field"><label>User agent</label><select data-set="ua"><option value="" ${!s.ua_mode||s.ua_mode==="Default"?"selected":""}>Default</option><option value="Desktop" ${s.ua_mode==="Desktop"?"selected":""}>Desktop</option><option value="Mobile" ${s.ua_mode==="Mobile"?"selected":""}>Mobile</option><option value="Via" ${s.ua_mode==="Via"?"selected":""}>Via</option><option value="Custom" ${s.ua_mode==="Custom"?"selected":""}>Custom</option></select></div>
+
+      <div class="sec-title">Advanced</div>
+      <div class="mg-item" data-set="restore"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-1.85-8.42"/></svg> Restore tabs <span class="switch${restoreTabs ? ' on' : ''}" style="margin-left:auto"></span></div>
+      <div class="mg-item" data-action="save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Save settings</div>
+    </div>`;
+  // wire toggles
+  body.querySelectorAll("[data-set]").forEach(el => {
+    el.addEventListener("click", () => {
+      const key = el.getAttribute("data-set")!;
+      const sw = el.querySelector(".switch");
+      if (key === "night") { nightMode = !nightMode; sw?.classList.toggle("on"); }
+      else if (key === "desktop") { desktopMode = !desktopMode; sw?.classList.toggle("on"); }
+      else if (key === "adblock") { adblockOn = !adblockOn; sw?.classList.toggle("on"); }
+      else if (key === "img") { showImages = !showImages; sw?.classList.toggle("on"); }
+      else if (key === "suggest") { s.search_suggest = !s.search_suggest; sw?.classList.toggle("on"); }
+      else if (key === "restore") { restoreTabs = !restoreTabs; sw?.classList.toggle("on"); }
+    });
+  });
+  body.querySelector("[data-action='save']")?.addEventListener("click", async () => {
+    s.night_mode = nightMode; s.desktop_mode = desktopMode; s.adblock_enabled = adblockOn;
+    s.show_images = showImages; s.restore_tabs = restoreTabs; s.text_size = textSize;
+    await invoke("set_settings", { settings: s });
+    showToast("Settings saved");
+  });
+}
+function renderSiteConfig(body: HTMLElement) {
+  const sites = settings?.sites || [];
+  if (!sites.length) { body.innerHTML = '<div class="empty-state">No site rules</div>'; return; }
+  body.innerHTML = '<div class="pp-list">' + sites.map(s =>
+    `<div class="pp-item">
+      <div class="pi-info"><div class="pi-title">${esc(s.host)}</div>
+      <div class="pi-sub">UA: ${esc(s.ua_mode || "Default")} · AdBlock: ${s.adblock_enabled ? "On" : "Off"}</div></div>
+    </div>`
+  ).join("") + "</div>";
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+/* ═══════════════════════════════════════════════
+   QR Scanner (native fallback)
+   ═══════════════════════════════════════════════ */
+async function handleQR() {
+  try {
+    const text = await invoke<string>("qr_pick_and_scan");
+    if (text) {
+      openUrlBar();
+      ($("url-input") as HTMLInputElement).value = text;
+    }
+  } catch (e) {
+    showToast("QR scan cancelled or unavailable");
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   Boot
+   ═══════════════════════════════════════════════ */
 async function boot() {
   settings = await invoke<Settings>("get_settings").catch(() => null);
   if (settings) {
@@ -669,13 +458,12 @@ async function boot() {
     showImages = settings.show_images !== false;
     adblockOn = settings.adblock_enabled !== false;
     restoreTabs = settings.restore_tabs || false;
-    homepageShortcuts = settings.homepage_shortcuts?.length ? settings.homepage_shortcuts : [...DEFAULT_SHORTCUTS];
-    toolbarLayout = settings.toolbar_layout || toolbarLayout;
   }
   bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
   historyItems = await invoke<HistItem[]>("list_history").catch(() => []);
   downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
 
+  // Restore session if enabled
   if (restoreTabs) {
     const session = await invoke<SessionEntry[]>("restore_session").catch(() => []);
     if (session.length) {
@@ -683,28 +471,27 @@ async function boot() {
         const info = await createTab(entry.url !== "about:blank" ? entry.url : undefined, !entry.active);
         if (entry.active) await switchTab(info.id);
       }
-      if (activeId) { $("home").classList.add("hidden"); updateNavState(); }
+      if (activeId) hideTopbarAndHome();
       updateTabCount();
     }
   }
 
-  renderHomepage();
-  initContextMenu();
-
   // Bottom nav buttons
   $("nav-back").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.back()" }); });
   $("nav-fwd").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.forward()" }); });
-  $("nav-url").addEventListener("click", () => openUrlBar());
+  $("nav-home").addEventListener("click", () => { if (activeId) { invoke("eval_tab", { id: activeId, js: "history.go(-999)" }); } else { showHomepage(); } });
   $("nav-tabs").addEventListener("click", () => {
+    if (tabs.length === 0) { createTab().then(t => switchTab(t.id)); return; }
     openPanel("Tabs (" + tabs.length + ")", b => {
-      b.innerHTML = `<div class="pp-list">${tabs.length ? tabs.map(t =>
-        `<div class="pp-item" data-tab="${t.id}" style="${t.id === activeId ? 'background:var(--bg4)' : ''}">
+      b.innerHTML = `<div class="pp-list">${tabs.map(t =>
+        `<div class="pp-item${t.id === activeId ? ' selected' : ''}" data-tab="${t.id}">
           <div class="pi-icon">${t.id === activeId ? "▶" : "◻"}</div>
           <div class="pi-info"><div class="pi-title">${esc(t.title || "New Tab")}</div>
           <div class="pi-sub">${esc(t.url || "about:blank")}</div></div>
-          <div class="pi-action" data-ctab="${t.id}">✕</div></div>`).join("") : '<div class="empty-state">No tabs</div>'}</div>
-      <div style="padding:12px 16px"><button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="new-tab-btn">+ New Tab</button></div>`;
-      b.querySelector("#new-tab-btn")?.addEventListener("click", () => { closePanel(); createTab().then(info => switchTab(info.id)); });
+          <div class="pi-action" data-ctab="${t.id}">✕</div>
+        </div>`).join("")}</div>
+      <div style="padding:12px 16px"><button class="btn" id="new-tab-btn">+ New Tab</button></div>`;
+      b.querySelector("#new-tab-btn")?.addEventListener("click", () => { closePanel(); createTab().then(t => switchTab(t.id)); });
       b.querySelectorAll(".pp-item[data-tab]").forEach(el => el.addEventListener("click", (e) => {
         if ((e.target as HTMLElement).classList.contains("pi-action")) return;
         closePanel(); switchTab(parseInt(el.getAttribute("data-tab")!));
@@ -714,28 +501,43 @@ async function boot() {
       }));
     }, "tabs");
   });
-  $("nav-menu").addEventListener("click", () => openPanel("Menu", renderMenu, "menu"));
+  $("nav-menu").addEventListener("click", () => { closePanel(); openSheet(); });
 
+  // Home search pill
+  $("home-search").addEventListener("click", openUrlBar);
   // URL overlay
   $("url-go").addEventListener("click", handleUrlGo);
-  $("url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") handleUrlGo(); });
+  $("url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") handleUrlGo(); if (e.key === "Escape") closeUrlBar(); });
   $("url-cancel").addEventListener("click", closeUrlBar);
-
-  // Home search
-  $("home-input").addEventListener("keydown", (e) => { if (e.key === "Enter") {
-    const val = (e.target as HTMLInputElement).value.trim();
-    if (val) {
-      if (/^https?:\/\//i.test(val) || /^[a-z0-9-]+\.[a-z]/i.test(val) || val.includes("://"))
-        navigate(/^https?:\/\//i.test(val) ? val : "https://" + val);
-      else navigate(ENGINES[searchEngine] + encodeURIComponent(val));
-    }
-  }});
-
-  // Panel back + backdrop
-  $("panel-back").addEventListener("click", () => { if (panelStack.length > 1) { panelStack.pop(); closePanel(); } else closePanel(); });
+  // Sheet
+  $("menu-backdrop").addEventListener("click", closeSheet);
+  $("sheet-exit").addEventListener("click", () => { closeSheet(); closePanel(); });
+  $("sheet-collapse").addEventListener("click", closeSheet);
+  // Panel
+  $("panel-back").addEventListener("click", closePanel);
   $("panel-backdrop").addEventListener("click", closePanel);
-
+  // Back/Fwd state
+  $("nav-back").addEventListener("click", () => setTimeout(updateNavState, 200));
+  $("nav-fwd").addEventListener("click", () => setTimeout(updateNavState, 200));
+  // Context menu
+  document.addEventListener("click", () => { $("context-menu").style.display = "none"; });
   window.addEventListener("beforeunload", () => saveSession());
-  console.log("[Via] Boot complete");
+  console.log("[Via] Boot complete — Via 7.2.1 Desktop");
+  updateTabCount();
 }
+
+function updateNavState() {
+  // Called after navigation events; could query history state
+  // For now just update URL display
+  updateUrlDisplay();
+}
+
+async function saveSession() {
+  if (!restoreTabs || !tabs.length) return;
+  const entries: SessionEntry[] = tabs.map((t, i) => ({
+    url: t.url, title: t.title, active: t.id === activeId, order: i
+  }));
+  await invoke("save_session", { entries }).catch(() => {});
+}
+
 boot();

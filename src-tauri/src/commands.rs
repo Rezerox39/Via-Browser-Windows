@@ -37,7 +37,7 @@ pub struct SettingsState(pub Mutex<Settings>);
 /// Height of the HTML bottom navigation bar — must match CSS `--nav-h`.
 /// The native webview is positioned at the very top (y=0) with a height that
 /// never includes the bottom bar area, so the nav bar always stays visible.
-pub const NAV_HEIGHT: f64 = 48.0; // must match CSS --nav-h
+pub const NAV_HEIGHT: f64 = 56.0; // must match CSS --nav-h
 
 /// File extensions that WebView2 hands off to the download engine instead of
 /// rendering. Never let the adblock navigation hook veto these: a "blocked"

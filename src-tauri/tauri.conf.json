@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Via Browser",
+        "title": "Via",
         "width": 1024,
         "height": 680,
         "minWidth": 480,

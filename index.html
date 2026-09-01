@@ -1,13 +1,53 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Via Browser</title>
-    <link rel="stylesheet" href="/src/styles.css" />
-  </head>
-  <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Via Browser</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <!-- ===== TOOLBAR (top) ===== -->
+  <header id="toolbar">
+    <button id="tb-back" title="Back" disabled>‹</button>
+    <button id="tb-fwd" title="Forward" disabled>›</button>
+    <button id="tb-reload" title="Reload">↻</button>
+    <div id="tb-addr">
+      <span id="tb-sec" title="Secure connection">🔒</span>
+      <input id="tb-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
+      <button id="tb-addr-go" title="Go">→</button>
+    </div>
+    <button id="tb-home" title="Home">⌂</button>
+    <button id="tb-menu" title="Menu">☰</button>
+    <button id="tb-tabs" title="Tabs"><span id="tb-tab-count">0</span></button>
+  </header>
+
+  <!-- ===== WEBVIEW CONTAINER ===== -->
+  <main id="stage">
+    <div id="home">
+      <img id="home-logo" src="/via-logo.svg" alt="Via Browser" draggable="false" />
+      <div id="home-search">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="home-input" type="text" placeholder="Search or enter address" autocomplete="off" spellcheck="false" />
+      </div>
+      <div id="home-shortcuts"></div>
+    </div>
+  </main>
+
+  <!-- ===== PANEL OVERLAY SYSTEM ===== -->
+  <div id="panel-backdrop"></div>
+  <div id="panel">
+    <div class="ph">
+      <button id="panel-back">‹</button>
+      <b id="panel-title"></b>
+      <span id="panel-spacer"></span>
+    </div>
+    <div id="panel-body"></div>
+  </div>
+
+  <!-- ===== TOAST ===== -->
+  <div id="toast"></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
 </html>

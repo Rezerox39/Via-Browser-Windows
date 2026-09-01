@@ -598,8 +598,8 @@ function renderClearData(body: HTMLElement) {
     closePanel();
   });
 }
-
 function renderAbout(body: HTMLElement) {
+
   body.innerHTML = `
     <div style="text-align:center;padding:40px 20px">
       <img src="/via-logo.svg" alt="Via" style="width:80px;margin-bottom:16px" />

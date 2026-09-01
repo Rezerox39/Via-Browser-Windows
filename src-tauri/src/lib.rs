@@ -4,6 +4,7 @@ mod features;
 mod init;
 mod native;
 mod reader;
+pub mod runtime;
 mod settings;
 
 use std::sync::Mutex;

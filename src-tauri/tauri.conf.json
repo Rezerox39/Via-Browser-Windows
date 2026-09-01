@@ -27,12 +27,22 @@
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis"
-    ],
+    "targets": ["nsis"],
     "icon": [
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "minimumWebview2Version": "100.0.0.0",
+      "nsis": {
+        "installMode": "both",
+        "displayLanguageSelector": false,
+        "installerHooks": "nsis/hooks.nsh"
+      }
+    }
   }
 }

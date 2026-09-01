@@ -9,11 +9,12 @@ type Settings = {
   night_mode: boolean; desktop_mode: boolean; text_size: number;
   show_images: boolean; network_log: boolean; game_mode: boolean;
   search_suggest: boolean; scripts: UserScript[]; sites: SiteConfig[];
-  pages_log: string[][]; restore_tabs: boolean; homepage_shortcuts: HomeShortcut[];
+  pages_log: string[][]; restore_tabs: boolean; homepage_shortcuts: HomeShortcut[]; toolbar_layout: ToolbarLayout;
 };
 type UserScript = { id: string; name: string; match_urls: string; code: string; enabled: boolean };
 type SiteConfig = { host: string; ua_mode: string; adblock_enabled: boolean };
 type HomeShortcut = { label: string; url: string; icon: string };
+type ToolbarLayout = { placement: string; visible: string[]; compact_two_row: boolean };
 type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
@@ -56,6 +57,7 @@ let networkLog = false;
 let adblockOn = true;
 let incognitoMode = false;
 let restoreTabs = false;
+let toolbarLayout: ToolbarLayout = { placement: "top", visible: ["back","fwd","reload","addr","home","menu","tabs"], compact_two_row: false };
 let homepageShortcuts: HomeShortcut[] = [...DEFAULT_SHORTCUTS];
 let contextMenu: HTMLElement | null = null;
 let activeBookmarkFolder = "";
@@ -573,6 +575,9 @@ function getMenuItems(): MenuItem[] {
     { id: "translate", label: "Translate", icon: "🌍", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "(function(){var s=document.createElement('script');s.src='https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit';document.head.appendChild(s);window.googleTranslateElementInit=function(){new google.translate.TranslateElement({pageLanguage:'auto'},'google_translate_element');};})()" }); showToast("Translate loading…"); } },
     { id: "fullscreen", label: "Fullscreen", icon: "⛶", action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "document.documentElement.requestFullscreen?.()" }); } },
     { id: "reader", label: "Reader mode", icon: "📖", action: () => { if (activeId) { const js = invoke<string>("reader_bundle").catch(() => ""); js.then(j => { if (j && activeId) invoke("eval_tab", { id: activeId, js: j }); }); showToast("Reader mode activated"); } } },
+    { id: "qr", label: "Scan QR", icon: "📷", action: () => openPanel("Scan QR Code", renderQRScan, "qr") },
+    { id: "passwords", label: "Passwords", icon: "🔐", action: () => openPanel("Password Manager", b => renderPasswordManager(b), "passwords") },
+    { id: "toolbar", label: "Toolbar", icon: "🔧", action: () => openPanel("Toolbar Layout", renderToolbarCustomize, "toolbar") },
     { id: "netlog", label: "Network log", icon: "📊", action: () => openPanel("Network Log", renderNetworkLog, "netlog") },
     { id: "clear", label: "Clear data", icon: "🗑", action: () => { openPanel("Clear Data", renderClearData, "cleardata"); } },
     { id: "settings", label: "Settings", icon: "⚙", action: () => openPanel("Settings", renderSettings, "settings") },
@@ -809,6 +814,7 @@ async function boot() {
     adblockOn = settings.adblock_enabled !== false;
     restoreTabs = settings.restore_tabs || false;
     homepageShortcuts = (settings.homepage_shortcuts?.length) ? settings.homepage_shortcuts : [...DEFAULT_SHORTCUTS];
+    toolbarLayout = settings.toolbar_layout || { placement: "top", visible: ["back","fwd","reload","addr","home","menu","tabs"], compact_two_row: false };
   }
   bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
   historyItems = await invoke<HistItem[]>("list_history").catch(() => []);
@@ -836,6 +842,7 @@ async function boot() {
   }
 
   renderHomepage();
+  applyToolbarLayout();
   initContextMenu();
 
   // toolbar buttons
@@ -903,3 +910,213 @@ async function boot() {
   console.log("[Via] Boot complete");
 }
 boot();
+
+/* ─── QR Scanner Panel ─── */
+function renderQRScan(body: HTMLElement) {
+  body.innerHTML = `
+    <div class="set-section">
+      <div class="set-label">Scan QR Code</div>
+      <div class="set-row" data-qr="image"><div class="sr-text"><div class="sr-title">Scan from image file</div>
+        <div class="sr-desc">Open a PNG, JPG, WebP or BMP to scan</div></div><div class="sr-val">📁</div></div>
+      <div class="set-row" data-qr="clipboard"><div class="sr-text"><div class="sr-title">Scan from clipboard</div>
+        <div class="sr-desc">Read image or URL from system clipboard</div></div><div class="sr-val">📋</div></div>
+    </div>
+    <div id="qr-result" style="padding:12px 16px"></div>`;
+  body.querySelector("[data-qr='image']")?.addEventListener("click", async () => {
+    const resultEl = body.querySelector<HTMLElement>("#qr-result")!;
+    resultEl.innerHTML = '<div class="empty-state">Scanning…</div>';
+    try {
+      const text = await invoke<string>("qr_pick_and_scan");
+      showQRResult(resultEl, text);
+    } catch (e: any) {
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`;
+    }
+  });
+  body.querySelector("[data-qr='clipboard']")?.addEventListener("click", async () => {
+    const resultEl = body.querySelector<HTMLElement>("#qr-result")!;
+    resultEl.innerHTML = '<div class="empty-state">Reading clipboard…</div>';
+    try {
+      const text = await invoke<string>("qr_scan_clipboard");
+      showQRResult(resultEl, text);
+    } catch (e: any) {
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`;
+    }
+  });
+}
+function showQRResult(el: HTMLElement, text: string) {
+  const isUrl = /^https?:\/\//i.test(text);
+  el.innerHTML = `
+    <div class="pp-item" style="background:var(--bg3);border-radius:var(--radius-sm);margin-bottom:8px">
+      <div class="pi-icon">${isUrl ? "🔗" : "📝"}</div>
+      <div class="pi-info"><div class="pi-title" style="word-break:break-all">${esc(text)}</div></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${isUrl ? `<button class="mg-item" style="border:1px solid var(--bg4);flex:1;min-width:80px" id="qr-open">Open</button>` : ""}
+      <button class="mg-item" style="border:1px solid var(--bg4);flex:1;min-width:80px" id="qr-copy">Copy</button>
+      ${isUrl ? `<button class="mg-item" style="border:1px solid var(--bg4);flex:1;min-width:80px" id="qr-search">Search</button>` : ""}
+    </div>`;
+  el.querySelector("#qr-open")?.addEventListener("click", () => { closePanel(); navigate(text); });
+  el.querySelector("#qr-copy")?.addEventListener("click", () => {
+    navigator.clipboard.writeText(text).then(() => showToast("Copied"));
+  });
+  el.querySelector("#qr-search")?.addEventListener("click", () => {
+    closePanel();
+    navigate(ENGINES[searchEngine] + encodeURIComponent(text));
+  });
+}
+
+/* ─── Password Manager Panel ─── */
+async function renderPasswordManager(body: HTMLElement) {
+  const supported = await invoke<boolean>("password_save_supported").catch(() => false);
+  if (!supported) {
+    body.innerHTML = '<div class="empty-state">Password storage is not available on this platform.</div>';
+    return;
+  }
+  body.innerHTML = `
+    <div class="set-section">
+      <div class="set-label">Password Manager</div>
+      <div class="set-row" data-pw="fill"><div class="sr-text"><div class="sr-title">Fill saved credentials</div>
+        <div class="sr-desc">Look up saved passwords for current site</div></div></div>
+      <div class="set-row" data-pw="save"><div class="sr-text"><div class="sr-title">Save credentials for current page</div>
+        <div class="sr-desc">Store username + password in Windows Credential Manager</div></div></div>
+      <div class="set-row" data-pw="delete"><div class="sr-text"><div class="sr-title">Delete saved credentials</div>
+        <div class="sr-desc">Remove saved passwords for current site</div></div></div>
+    </div>
+    <div id="pw-result" style="padding:12px 16px"></div>`;
+  body.querySelector("[data-pw='fill']")?.addEventListener("click", async () => {
+    const resultEl = body.querySelector<HTMLElement>("#pw-result")!;
+    const url = tabs.find(t => t.id === activeId)?.url || "";
+    const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+    if (!host) { resultEl.innerHTML = '<div class="empty-state">No page loaded.</div>'; return; }
+    const username = prompt("Username:");
+    if (!username) return;
+    try {
+      const pw = await invoke<string | null>("get_password", { service: `via.${host}`, username });
+      if (pw) {
+        resultEl.innerHTML = `<div class="empty-state">Password found. Injecting into page…</div>`;
+        // Inject into the page (user must confirm via browser prompt for security)
+        if (activeId) {
+          invoke("eval_tab", { id: activeId, js: `
+            (function(){
+              var u = document.activeElement;
+              if (!u || u.tagName !== 'INPUT') { alert('Click on a password field first, then try again.'); return; }
+              u.value = ${JSON.stringify(pw)};
+              u.dispatchEvent(new Event('input', {bubbles:true}));
+            })()
+          `});
+        }
+        resultEl.innerHTML = `<div class="empty-state" style="color:var(--green)">Credentials filled. Close this panel and verify.</div>`;
+      } else {
+        resultEl.innerHTML = '<div class="empty-state">No saved credentials found for this host.</div>';
+      }
+    } catch (e: any) {
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`;
+    }
+  });
+  body.querySelector("[data-pw='save']")?.addEventListener("click", async () => {
+    const resultEl = body.querySelector<HTMLElement>("#pw-result")!;
+    const url = tabs.find(t => t.id === activeId)?.url || "";
+    const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+    if (!host) { resultEl.innerHTML = '<div class="empty-state">No page loaded.</div>'; return; }
+    const username = prompt("Username:");
+    if (!username) return;
+    const password = prompt("Password (shown only once):");
+    if (!password) return;
+    try {
+      await invoke("save_password", { service: `via.${host}`, username, password });
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--green)">Credentials saved to Windows Credential Manager.</div>`;
+    } catch (e: any) {
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`;
+    }
+  });
+  body.querySelector("[data-pw='delete']")?.addEventListener("click", async () => {
+    const resultEl = body.querySelector<HTMLElement>("#pw-result")!;
+    const url = tabs.find(t => t.id === activeId)?.url || "";
+    const host = (() => { try { return new URL(url).hostname; } catch { return ""; } })();
+    if (!host) { resultEl.innerHTML = '<div class="empty-state">No page loaded.</div>'; return; }
+    const username = prompt("Username to delete:");
+    if (!username) return;
+    try {
+      const deleted = await invoke<boolean>("delete_password", { service: `via.${host}`, username });
+      resultEl.innerHTML = deleted
+        ? `<div class="empty-state" style="color:var(--green)">Credential deleted.</div>`
+        : `<div class="empty-state">No saved credential found for that username.</div>`;
+    } catch (e: any) {
+      resultEl.innerHTML = `<div class="empty-state" style="color:var(--red)">${esc(String(e))}</div>`;
+    }
+  });
+}
+
+/* ─── Toolbar Customization Panel ─── */
+const ALL_TOOLBAR_ACTIONS = [
+  { id: "back", label: "Back" }, { id: "fwd", label: "Forward" },
+  { id: "reload", label: "Reload" }, { id: "home", label: "Home" },
+  { id: "menu", label: "Menu" }, { id: "tabs", label: "Tabs" },
+];
+function renderToolbarCustomize(body: HTMLElement) {
+  const vis = toolbarLayout.visible;
+  body.innerHTML = `
+    <div class="set-section">
+      <div class="set-label">Toolbar Placement</div>
+      <div class="set-row" data-tb-place="top"><div class="sr-text"><div class="sr-title">Top</div></div>
+        <div class="sr-val">${toolbarLayout.placement === "top" ? "✓" : ""}</div></div>
+      <div class="set-row" data-tb-place="bottom"><div class="sr-text"><div class="sr-title">Bottom</div></div>
+        <div class="sr-val">${toolbarLayout.placement === "bottom" ? "✓" : ""}</div></div>
+    </div>
+    <div class="set-section">
+      <div class="set-label">Visible Actions (tap to toggle)</div>
+      ${ALL_TOOLBAR_ACTIONS.map(a => `
+        <div class="set-row" data-tb-id="${a.id}">
+          <div class="sr-text"><div class="sr-title">${a.label}</div></div>
+          <div class="switch ${vis.includes(a.id) ? 'on' : ''}"></div>
+        </div>`).join("")}
+    </div>
+    <div style="padding:12px 16px">
+      <button class="mg-item" style="width:100%;border:1px solid var(--bg4)" id="tb-restore">Restore defaults</button>
+    </div>`;
+  body.querySelectorAll("[data-tb-place]").forEach(el => {
+    el.addEventListener("click", () => {
+      toolbarLayout.placement = el.getAttribute("data-tb-place")!;
+      applyToolbarLayout();
+      saveToolbarLayout();
+      renderToolbarCustomize(body);
+    });
+  });
+  body.querySelectorAll("[data-tb-id]").forEach(el => {
+    el.addEventListener("click", () => {
+      const id = el.getAttribute("data-tb-id")!;
+      const idx = vis.indexOf(id);
+      if (idx >= 0) vis.splice(idx, 1);
+      else vis.push(id);
+      applyToolbarLayout();
+      saveToolbarLayout();
+      renderToolbarCustomize(body);
+    });
+  });
+  body.querySelector("#tb-restore")?.addEventListener("click", () => {
+    toolbarLayout = { placement: "top", visible: ["back","fwd","reload","addr","home","menu","tabs"], compact_two_row: false };
+    applyToolbarLayout();
+    saveToolbarLayout();
+    renderToolbarCustomize(body);
+    showToast("Toolbar restored");
+  });
+}
+function applyToolbarLayout() {
+  const tb = $("toolbar") as HTMLElement;
+  tb.style.top = toolbarLayout.placement === "bottom" ? "auto" : "0";
+  tb.style.bottom = toolbarLayout.placement === "bottom" ? "0" : "auto";
+  // Show/hide individual buttons
+  const btns: Record<string, HTMLElement> = {
+    back: $("tb-back"), fwd: $("tb-fwd"), reload: $("tb-reload"),
+    home: $("tb-home"), menu: $("tb-menu"), tabs: $("tb-tabs"),
+  };
+  for (const [id, el] of Object.entries(btns)) {
+    el.style.display = toolbarLayout.visible.includes(id) ? "" : "none";
+  }
+}
+async function saveToolbarLayout() {
+  if (settings) {
+    settings.toolbar_layout = toolbarLayout;
+    await invoke("set_settings", { s: settings }).catch(() => {});
+  }
+}

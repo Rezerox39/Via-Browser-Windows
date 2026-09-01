@@ -24,6 +24,13 @@ url = "2"
 dirs = "5"
 regex = "1"
 unicode-normalization = "0.1"
+# QR code scanning
+rqrr = "0.5"
+image = { version = "0.24", default-features = false, features = ["jpeg", "png", "webp", "bmp"] }
+rfd = "0.15"
+arboard = { version = "3", features = ["image-data"] }
+# Password manager (Windows Credential Manager via keyring)
+keyring = { version = "3", features = ["sync-secret-service", "windows-native"] }
 
 [profile.release]
 panic = "abort"

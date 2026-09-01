@@ -65,7 +65,8 @@ pub struct Settings {
     pub sites: Vec<SiteConfig>,
     pub pages_log: Vec<Vec<String>>,
     pub restore_tabs: bool,
-    pub homepage_shortcuts: Vec<HomeShortcut>, // most-recent network log rows (url, type, size)
+    pub homepage_shortcuts: Vec<HomeShortcut>,
+    pub toolbar_layout: ToolbarLayout,
 }
 
 impl Default for Settings {
@@ -92,6 +93,7 @@ impl Default for Settings {
             pages_log: Vec::new(),
             restore_tabs: false,
             homepage_shortcuts: Vec::new(),
+            toolbar_layout: ToolbarLayout::default(),
         }
     }
 }
@@ -127,5 +129,30 @@ pub struct HomeShortcut {
 impl Default for HomeShortcut {
     fn default() -> Self {
         Self { label: String::new(), url: String::new(), icon: "🌐".into() }
+    }
+}
+
+/// Toolbar customization layout (Via-style).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolbarLayout {
+    /// Where the toolbar is placed: "top" (default), "bottom".
+    pub placement: String,
+    /// Ordered list of toolbar button IDs to show.  Omitted IDs are hidden.
+    pub visible: Vec<String>,
+    /// Compact two-row mode: split toolbar into two rows for wide screens.
+    pub compact_two_row: bool,
+}
+
+impl Default for ToolbarLayout {
+    fn default() -> Self {
+        Self {
+            placement: "top".into(),
+            visible: vec![
+                "back".into(), "fwd".into(), "reload".into(),
+                "addr".into(), "home".into(), "menu".into(), "tabs".into(),
+            ],
+            compact_two_row: false,
+        }
     }
 }

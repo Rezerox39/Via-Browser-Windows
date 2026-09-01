@@ -2,6 +2,7 @@ mod adblock;
 mod commands;
 mod features;
 mod init;
+mod native;
 mod reader;
 mod settings;
 
@@ -25,24 +26,16 @@ pub fn run() {
             }
             handle.manage(SettingsState(Mutex::new(loaded)));
             handle.manage(StoreState(Mutex::new(features::load_store(&handle))));
-
-            // Session restore state
             let session = commands::load_session(&handle);
             handle.manage(SessionState(Mutex::new(session)));
             handle.manage(ClosedTabStack(Mutex::new(std::collections::VecDeque::new())));
 
-            // Keep every tab webview above the HTML bottom nav bar when the
-            // window is resized (native webviews don't follow CSS layout).
             if let Some(win) = app.get_webview_window("main") {
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
                     match event {
                         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                             commands::relayout_tabs(&handle);
-                        }
-                        WindowEvent::CloseRequested { api, .. } => {
-                            // On window close, we could save session here if needed.
-                            // For now, the frontend handles it before the window closes.
                         }
                         _ => {}
                     }
@@ -73,7 +66,7 @@ pub fn run() {
             commands::set_night_mode,
             commands::search_suggest,
             commands::parse_and_load_url,
-            // session restore
+            // session
             commands::save_session,
             commands::restore_session,
             commands::clear_session,
@@ -112,13 +105,61 @@ pub fn run() {
             features::export_backup,
             features::import_backup,
             features::import_latest_backup,
-            // homepage shortcuts
             features::list_homepage_shortcuts,
             features::save_homepage_shortcuts,
             // reader
             reader::reader_bundle,
             reader::reader_close,
+            // native: QR + passwords
+            qr_scan_image,
+            qr_scan_clipboard,
+            qr_pick_and_scan,
+            save_password,
+            get_password,
+            delete_password,
+            password_save_supported,
         ])
         .run(tauri::generate_context!())
         .expect("error while running via browser");
+}
+
+/* ─── Native Tauri commands ─── */
+
+#[tauri::command]
+fn qr_scan_image(path: String) -> Result<String, String> {
+    native::decode_image_file(&path)
+}
+
+#[tauri::command]
+fn qr_scan_clipboard() -> Result<String, String> {
+    native::decode_clipboard()
+}
+
+#[tauri::command]
+fn qr_pick_and_scan() -> Result<String, String> {
+    let (text, _path) = native::pick_and_decode_image()?;
+    Ok(text)
+}
+
+#[tauri::command]
+fn save_password(service: String, username: String, password: String) -> Result<(), String> {
+    native::save_credential(&service, &username, &password)
+}
+
+#[tauri::command]
+fn get_password(service: String, username: String) -> Result<Option<String>, String> {
+    native::get_credential(&service, &username)
+}
+
+#[tauri::command]
+fn delete_password(service: String, username: String) -> Result<bool, String> {
+    native::delete_credential(&service, &username)
+}
+
+/// Report whether password storage is supported on this platform.
+#[tauri::command]
+fn password_save_supported() -> bool {
+    // keyring crate works on Windows (Credential Manager) and Linux (secret-service).
+    // On macOS it uses Keychain. If it fails at runtime, save_password returns Err.
+    cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos"))
 }

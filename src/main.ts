@@ -128,6 +128,7 @@ function createTab(url?: string): Promise<Tab> {
       // Empty tab — show the homepage, hide all webviews
       showHomePage();
     }
+    updateNavButtons();
     updateTabCount();
     return tab;
   });
@@ -160,9 +161,16 @@ async function switchTab(id: number) {
   if (tab) tab.active = true;
   activeId = id;
   await invoke("select_tab", { id }).catch(e => log("select_tab failed", e));
-  // Show only this tab's webview, hide homepage
-  showOnlyWebview(id);
-  hideHomePage();
+  // If the tab is empty (new tab), show the homepage overlay.
+  // If it has a URL, show the webview and hide the homepage.
+  const isEmpty = !tab || !tab.url || tab.url === "about:blank" || tab.url === "";
+  if (isEmpty) {
+    hideAllWebviews();
+    $("home").classList.remove("hidden");
+  } else {
+    showOnlyWebview(id);
+    hideHomePage();
+  }
   updateNavButtons();
   updateTabCount();
 }
@@ -193,9 +201,13 @@ function handleSearch() {
 async function openUrl(url: string) {
   log("openUrl", url);
   if (activeId) {
+    // Update the tab model to reflect the new URL
+    const tab = tabs.find(t => t.id === activeId);
+    if (tab) tab.url = url;
     await invoke("navigate_tab", { id: activeId, url }).catch(() => showToast("Nav failed"));
     showOnlyWebview(activeId);
     hideHomePage();
+    updateNavButtons();
   } else {
     await createTab(url);
   }
@@ -287,7 +299,7 @@ function renderCustomize(b: HTMLElement) {
   const list = b.querySelector("#cv")!; let d: HTMLElement | null = null;
   list.addEventListener("dragstart", e => { d = (e.target as HTMLElement).closest(".drag-item"); if (d) d.style.opacity = "0.5"; });
   list.addEventListener("dragend", () => { if (d) d.style.opacity = ""; d = null; });
-  list.addEventListener("dragover", e => { e.preventDefault(); const t = (e.target as HTMLElement).closest(".drag-item") as HTMLElement; if (t && t !== d && d) { const r = t.getBoundingClientRect(); e.clientY < r.top + r.height / 2 ? list.insertBefore(d, t) : list.insertBefore(d, t.nextSibling); } });
+  list.addEventListener("dragover", (e: any) => { e.preventDefault(); const t = (e.target as HTMLElement).closest(".drag-item") as HTMLElement; if (t && t !== d && d) { const r = t.getBoundingClientRect(); e.clientY < r.top + r.height / 2 ? list.insertBefore(d, t) : list.insertBefore(d, t.nextSibling); } });
   list.addEventListener("dragend", async () => { const o: string[] = []; list.querySelectorAll(".drag-item").forEach(el => o.push(el.getAttribute("data-mid")!)); if (settings?.toolbar_layout) settings.toolbar_layout.visible = o; await persistSettings(); refreshMenu(); });
   b.querySelector("#rmb")?.addEventListener("click", async () => { if (settings?.toolbar_layout) settings.toolbar_layout.visible = []; await persistSettings(); renderCustomize(b); refreshMenu(); showToast("Reset"); });
 }
@@ -330,6 +342,8 @@ function setupEvents() {
       // Page loaded — hide homepage, ensure this webview is visible
       if (tab.id === activeId) {
         hideHomePage();
+        showOnlyWebview(tab.id);
+        updateNavButtons();
       }
       if (!ev.payload.url.startsWith("about:")) invoke("add_history", { url: ev.payload.url, title: tab.title }).catch(() => {});
     }

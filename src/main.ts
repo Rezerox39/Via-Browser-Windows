@@ -129,6 +129,7 @@ function hideHomePage() {
 }
 
 function createTab(url?: string): Promise<Tab> {
+  log("createTab CALLED url=", url, "stack=", new Error().stack);
   // Empty tabs: no child webview needed — just a local model.
   // This avoids the WebView2 about:blank / Bing issue entirely.
   if (!url) {
@@ -594,7 +595,22 @@ async function boot() {
   // in a future version with proper session versioning.
   updateTabCount();
   $("home").classList.remove("hidden");
+  $("home").classList.remove("hidden");
   log("Boot complete, tabs:", tabs.length);
+  
+  // AGGRESSIVE SAFETY NET: force homepage visible, kill any stray webviews
+  // This runs after everything else to guarantee the homepage is shown.
+  setTimeout(() => {
+    hideAllWebviews();
+    $("home").classList.remove("hidden");
+    $("bottom-nav").classList.remove("hidden");
+    log("SAFETY NET: forced homepage visible, all webviews hidden");
+  }, 200);
+  setTimeout(() => {
+    hideAllWebviews();
+    $("home").classList.remove("hidden");
+    $("bottom-nav").classList.remove("hidden");
+  }, 1000);
 }
 
 function setupDraggableNav() {

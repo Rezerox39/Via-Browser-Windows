@@ -4,21 +4,78 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Via</title>
+  <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="icon" type="image/png" href="/via-icon-144.png" />
 </head>
-<body style="margin:0;padding:0;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;width:100vw;height:100vh;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-direction:column">
-  <img src="/via-logo.svg" alt="Via" style="width:90px;pointer-events:none" />
-  <div style="margin-top:36px;width:min(420px,80vw)">
-    <div style="display:flex;align-items:center;width:100%;height:48px;border:1px solid #333;border-radius:50px;padding:0 18px;gap:10px;color:#a0a0a0">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false" style="flex:1;height:32px;font-size:15px;background:transparent;border:none;color:#fff;outline:none;font:inherit" />
+<body>
+  <!-- Homepage (shown when no tab is active) -->
+  <div id="home">
+    <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
+    <div id="home-search-wrap">
+      <div id="home-search" role="button" tabindex="0">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input id="home-input" type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false" />
+      </div>
     </div>
   </div>
-  <div style="position:fixed;bottom:20px;left:50%;transform:translateX(-50%);height:56px;min-width:360px;max-width:90vw;display:flex;align-items:center;justify-content:space-evenly;background:rgba(16,16,16,0.65);backdrop-filter:blur(24px);border:1px solid rgba(255,255,255,0.08);border-radius:28px;padding:0 4px;z-index:99999">
-    <span style="color:#a0a0a0;padding:0 12px;font-size:22px">◁</span>
-    <span style="color:#a0a0a0;padding:0 12px;font-size:22px">▷</span>
-    <span style="color:#a0a0a0;padding:0 12px;font-size:22px">⌂</span>
-    <span style="color:#fff;padding:0 8px;font-size:14px;font-weight:700;border:1.5px solid #fff;border-radius:5px;min-width:26px;height:20px;display:flex;align-items:center;justify-content:center">1</span>
-    <span style="color:#a0a0a0;padding:0 12px;font-size:22px">≡</span>
+
+  <!-- Floating Bottom Navigation (homepage only; child webviews get injected nav) -->
+  <div id="bottom-nav">
+    <button id="nav-back" title="Back" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button id="nav-fwd" title="Forward" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button id="nav-home" title="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+    </button>
+    <button id="nav-tabs" title="Tabs">
+      <span id="nav-tab-count">1</span>
+    </button>
+    <button id="nav-menu" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
   </div>
+
+  <!-- Side menu (slides from right) -->
+  <div id="menu-backdrop"></div>
+  <div id="side-menu">
+    <div id="side-menu-grid"></div>
+    <div id="side-menu-pagination"></div>
+    <div id="side-menu-footer">
+      <button id="menu-exit" title="Exit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        <span>Exit</span>
+      </button>
+      <button id="menu-collapse" title="Collapse">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="6 9 12 15 18 9"/></svg>
+        <span>Collapse</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Full-screen panel for sub-pages -->
+  <div id="panel-backdrop"></div>
+  <div id="panel">
+    <div class="ph">
+      <button id="panel-back">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <b id="panel-title"></b>
+      <span id="panel-spacer"></span>
+      <button id="panel-action"></button>
+    </div>
+    <div id="panel-body"></div>
+  </div>
+
+  <!-- Download notification toast -->
+  <div id="dl-toast"></div>
+  <!-- Toast -->
+  <div id="toast"></div>
+  <!-- Context menu -->
+  <div id="context-menu" style="display:none"></div>
+
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

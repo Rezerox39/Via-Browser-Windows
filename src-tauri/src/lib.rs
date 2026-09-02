@@ -56,6 +56,8 @@ pub fn run() {
             commands::eval_tab,
             commands::get_tab_url,
             commands::list_tabs,
+            commands::get_browser_state,
+            log_to_file,
             // settings & browser
             commands::get_settings,
             commands::set_settings,
@@ -125,6 +127,28 @@ pub fn run() {
 }
 
 /* ─── Native Tauri commands ─── */
+
+#[tauri::command]
+fn log_to_file(msg: String) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = format!("[{}] [JS] {}\n", ts, msg);
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open(dir.join("via-debug.log"))
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+        }
+    }
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("via-debug.log")
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
 
 #[tauri::command]
 fn qr_scan_image(path: String) -> Result<String, String> {

@@ -9,6 +9,43 @@ use crate::adblock;
 use crate::init;
 use crate::settings::{self, Settings};
 
+
+const DIAG_BUILD: &str = "BUILD_2026_09_02_DIAG_v3";
+
+fn diag_log(msg: &str) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let line = format!("[{}] [DIAG] {}\n", ts, msg);
+    // Try to write next to the exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let _ = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open(dir.join("via-debug.log"))
+                .and_then(|mut f| f.write_all(line.as_bytes()));
+        }
+    }
+    // Also try CWD
+    let _ = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("via-debug.log")
+        .and_then(|mut f| f.write_all(line.as_bytes()));
+}
+
+#[derive(Clone, Serialize)]
+pub struct BrowserDiag {
+    pub build: String,
+    pub tab_count: usize,
+    pub webview_labels: Vec<String>,
+    pub active_tab: Option<u32>,
+    pub next_id: u32,
+}
+
+
+
 #[derive(Clone, Serialize)]
 pub struct SuggestItem {
     pub label: String,
@@ -259,6 +296,12 @@ pub async fn create_tab(
 ) -> Result<TabInfo, String> {
     let window = main_window(&app)?;
     let s = sstate.0.lock().unwrap().clone();
+    diag_log(&format!("create_tab START url={:?}", url));
+    {
+        let tabs = state.tabs.lock().unwrap();
+        let active = state.active.lock().unwrap();
+        diag_log(&format!("create_tab STATE tabs={}, active={:?}, next_id={}", tabs.len(), *active, *state.next_id.lock().unwrap()));
+    }
     let mut idx = state.next_id.lock().unwrap();
     *idx += 1;
     let id = *idx;
@@ -477,6 +520,7 @@ pub async fn create_tab(
         .map_err(|e| e.to_string())?;
     // Start hidden: the pure-black local homepage is shown until the user
     // navigates somewhere (the frontend calls show_tab on navigation).
+    diag_log(&format!("create_tab WebView CREATED id={} label={}", id, label));
     webview.hide().ok();
 
     {
@@ -484,6 +528,7 @@ pub async fn create_tab(
         tabs.insert(id, label.clone());
     }
     *state.active.lock().unwrap() = Some(id);
+    diag_log(&format!("create_tab DONE id={} tabs_after={}", id, state.tabs.lock().unwrap().len()));
 
     Ok(TabInfo {
         id,
@@ -494,12 +539,40 @@ pub async fn create_tab(
     })
 }
 
+
+#[tauri::command]
+pub fn get_browser_state(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+) -> BrowserDiag {
+    let tabs = state.tabs.lock().unwrap();
+    let active = state.active.lock().unwrap();
+    let next = *state.next_id.lock().unwrap();
+    let labels: Vec<String> = tabs.values().cloned().collect();
+    let webview_count = labels.iter()
+        .filter(|l| app.get_webview(l).is_some())
+        .count();
+    let diag = BrowserDiag {
+        build: DIAG_BUILD.to_string(),
+        tab_count: tabs.len(),
+        webview_labels: labels.clone(),
+        active_tab: *active,
+        next_id: next,
+    };
+    diag_log(&format!(
+        "STATE: tabs={}, real_webviews={}, active={:?}, next_id={}, labels={:?}",
+        tabs.len(), webview_count, *active, next, labels
+    ));
+    diag
+}
+
 #[tauri::command]
 pub fn close_tab(
     app: tauri::AppHandle,
     state: tauri::State<'_, BrowserState>,
     id: u32,
 ) -> Result<(), String> {
+    diag_log(&format!("close_tab id={}", id));
     let label = state.tabs.lock().unwrap().remove(&id);
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
@@ -522,6 +595,7 @@ pub fn navigate_tab(
     id: u32,
     url: String,
 ) -> Result<(), String> {
+    diag_log(&format!("navigate_tab id={} url={}", id, url));
     let label = state.tabs.lock().unwrap().get(&id).cloned();
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
@@ -538,6 +612,7 @@ pub fn select_tab(
     state: tauri::State<'_, BrowserState>,
     id: u32,
 ) -> Result<TabInfo, String> {
+    diag_log(&format!("select_tab id={}", id));
     let label = state.tabs.lock().unwrap().get(&id).cloned();
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {

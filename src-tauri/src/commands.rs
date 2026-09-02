@@ -549,13 +549,22 @@ pub fn select_tab(
     let label = state.tabs.lock().unwrap().get(&id).cloned();
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
+            // Restore bounds before showing (in case it was moved off-screen)
+            if let Some(bounds) = tab_bounds(&app) {
+                let _ = wv.set_bounds(bounds);
+            }
             let _ = wv.show();
             let _ = wv.set_focus();
             let url = wv.url().map(|u| u.to_string()).unwrap_or_default();
+            // Hide other tabs by moving them off-screen
             for (_, other) in state.tabs.lock().unwrap().iter() {
                 if other != &label {
                     if let Some(o) = app.get_webview(other) {
                         let _ = o.hide();
+                        let _ = o.set_bounds(tauri::Rect {
+                            position: tauri::LogicalPosition::new(-99999.0, -99999.0).into(),
+                            size: tauri::LogicalSize::new(1.0, 1.0).into(),
+                        });
                     }
                 }
             }
@@ -571,6 +580,11 @@ pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
     let label = format!("tab-{id}");
     if let Some(wv) = app.get_webview(&label) {
         let _ = wv.hide();
+        // Move off-screen as fallback in case hide() doesn't work on Windows
+        let _ = wv.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(-99999.0, -99999.0).into(),
+            size: tauri::LogicalSize::new(1.0, 1.0).into(),
+        });
     }
     Ok(())
 }
@@ -579,7 +593,12 @@ pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
 pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
     let label = format!("tab-{id}");
     if let Some(wv) = app.get_webview(&label) {
+        // Restore bounds first (in case hide_tab moved it off-screen)
+        if let Some(bounds) = tab_bounds(&app) {
+            let _ = wv.set_bounds(bounds);
+        }
         let _ = wv.show();
+        let _ = wv.set_focus();
     }
     Ok(())
 }

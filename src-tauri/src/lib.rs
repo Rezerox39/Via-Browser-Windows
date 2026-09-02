@@ -31,6 +31,7 @@ pub fn run() {
             handle.manage(ClosedTabStack(Mutex::new(std::collections::VecDeque::new())));
 
             if let Some(win) = app.get_webview_window("main") {
+                let _ = win.set_title("Via Browser v7.2.1 · Windows — AMOLED Black");
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
                     match event {

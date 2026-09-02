@@ -260,12 +260,19 @@ pub async fn create_tab(
     let window = main_window(&app)?;
     let s = sstate.0.lock().unwrap().clone();
 
-    // SAFEGUARD: refuse to create a webview for about:blank or empty URLs.
-    // Empty tabs should be handled client-side as local-only models.
+    // NUCLEAR BLOCK: ALL webview creation is disabled to prove root cause.
+    // If the homepage appears, child webviews are the problem.
     let raw_url = url.as_deref().unwrap_or("");
-    if raw_url.is_empty() || raw_url == "about:blank" {
-        return Err("Empty tabs must not create webviews".into());
+    {
+        use std::io::Write;
+        let log = format!("[{:?}] create_tab BLOCKED url={:?}\n",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
+            raw_url);
+        let _ = std::fs::OpenOptions::new().create(true).append(true)
+            .open("via-debug.log")
+            .and_then(|mut f| f.write_all(log.as_bytes()));
     }
+    return Err(format!("ALL webview creation blocked. URL was: {}", raw_url).into());
 
     let mut idx = state.next_id.lock().unwrap();
     *idx += 1;

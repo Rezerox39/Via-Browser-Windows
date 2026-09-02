@@ -413,15 +413,14 @@ pub async fn create_tab(
         })
         .on_navigation(move |url| {
             println!("[via] NAVIGATING TO: {url}");
-            // Direct file URLs (and blob:/data: schemes) are downloads, not
-            // pages. Adblock must never veto them or the file transfer is
-            // canceled before the download engine even starts.
+            // Always allow navigation so WebView2 can detect and handle
+            // downloads through the on_download callback. Ad-block filtering
+            // at the navigation level can block download redirects, so we
+            // only filter non-download URLs.
             if is_download_eligible(&url) {
-                println!("[via]   -> download-eligible URL, navigation allowed");
+                println!("[via]   -> download-eligible, allowed");
                 return true;
             }
-            // Main-frame adblock: block navigation to blocked hosts.
-            // Honours the default toggle and per-site ("Site configuration") overrides.
             let host = url.host_str().unwrap_or("").to_lowercase();
             let mut adblock = nav_settings.adblock_enabled;
             for site in &nav_settings.sites {
@@ -431,6 +430,7 @@ pub async fn create_tab(
                 }
             }
             if adblock && adblock::load_default_filters().block(url.as_str()).is_some() {
+                println!("[via]   -> blocked by adblock");
                 return false;
             }
             true

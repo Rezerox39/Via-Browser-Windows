@@ -36,19 +36,18 @@ let nightMode = false, desktopMode = true, textSize = 1.0, showImages = true;
 let adblockOn = true, incognitoMode = false, restoreTabs = false;
 let menuPage = 0;
 const MENU_PAGE_SIZE = 12;
-
 const $ = (s: string) => document.getElementById(s) as HTMLElement;
 function esc(s: string): string { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function showToast(msg: string) {
   const el = $("toast"); el.textContent = msg; el.classList.add("show");
   clearTimeout((el as any)._t); (el as any)._t = setTimeout(() => el.classList.remove("show"), 2400);
 }
-function fmtSize(b: number): string { return b < 1024 ? b+" B" : b < 1048576 ? (b/1024).toFixed(1)+" KB" : b < 1073741824 ? (b/1048576).toFixed(1)+" MB" : (b/1073741824).toFixed(1)+" GB"; }
+function fmtSize(b: number): string { return b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : b < 1073741824 ? (b / 1048576).toFixed(1) + " MB" : (b / 1073741824).toFixed(1) + " GB"; }
+function log(msg: string, ...args: any[]) { console.log("[Via]", msg, ...args); }
 
 /* ═══════ Menu ═══════ */
 interface MI { id: string; label: string; icon: string; action: () => void; active?: () => boolean; }
 function ic(p: string) { return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">${p}</svg>`; }
-
 const MENU: MI[] = [
   { id: "bookmarks", label: "Bookmarks", icon: '<path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/>', action: () => openPanel("Bookmarks", renderBookmarks) },
   { id: "history", label: "History", icon: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>', action: () => openPanel("History", renderHistory) },
@@ -57,7 +56,7 @@ const MENU: MI[] = [
   { id: "night", label: "Night mode", icon: '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>', action: () => { nightMode = !nightMode; invoke("set_night_mode", { enabled: nightMode }); persistSettings(); showToast(nightMode ? "Night on" : "Night off"); refreshMenu(); }, active: () => nightMode },
   { id: "desktop", label: "Desktop mode", icon: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>', action: () => { desktopMode = !desktopMode; persistSettings(); showToast(desktopMode ? "Desktop UA" : "Mobile UA"); refreshMenu(); }, active: () => desktopMode },
   { id: "reader", label: "Reader mode", icon: '<path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/>', action: () => { if (!activeId) { showToast("Open a page first"); return; } invoke<string>("reader_bundle").then(js => invoke("eval_tab", { id: activeId!, js })).then(() => showToast("Reader on")).catch(() => showToast("Reader failed")); } },
-  { id: "qr", label: "QR scanner", icon: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3zM21 14v7h-7"/>', action: async () => { try { const t = await invoke<string>("qr_pick_and_scan"); if (t && confirm("QR: " + t + "\nOpen?")) openUrl(/^https?:\/\//i.test(t) ? t : "https://www.google.com/search?q=" + encodeURIComponent(t)); } catch { showToast("QR cancelled"); } } },
+  { id: "qr", label: "QR scanner", icon: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>', action: async () => { try { const t = await invoke<string>("qr_pick_and_scan"); if (t && confirm("QR: " + t + "\nOpen?")) openUrl(/^https?:\/\//i.test(t) ? t : "https://www.google.com/search?q=" + encodeURIComponent(t)); } catch { showToast("QR cancelled"); } } },
   { id: "find", label: "Find on page", icon: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>', action: () => { if (!activeId) { showToast("Open a page first"); return; } const q = prompt("Find:"); if (q) invoke("eval_tab", { id: activeId, js: `window.find(${JSON.stringify(q)})` }).catch(() => {}); } },
   { id: "fullscreen", label: "Full screen", icon: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>', action: () => { const w = (window as any).__TAURI__?.window?.appWindow; if (w) w.isFullscreen().then((f: boolean) => w.setFullscreen(!f)); else if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen(); } },
   { id: "share", label: "Share link", icon: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>', action: () => { const t = tabs.find(x => x.id === activeId); if (t?.url) navigator.clipboard.writeText(t.url).then(() => showToast("Copied")).catch(() => {}); else showToast("No URL"); } },
@@ -70,18 +69,17 @@ const MENU: MI[] = [
   { id: "cookies", label: "Cookies", icon: '<path d="M12 2a10 10 0 100 20 10 10 0 000-20z"/><circle cx="12" cy="12" r="2"/>', action: () => openPanel("Cookies", renderCookies) },
   { id: "customize", label: "Customize", icon: '<line x1="4" y1="21" x2="4" y2="14"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="20" y1="21" x2="20" y2="16"/>', action: () => openPanel("Customize menu", renderCustomize) },
   { id: "settings", label: "Settings", icon: '<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2"/>', action: () => openPanel("Settings", renderSettings) },
-  { id: "about", label: "About", icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>', action: () => openPanel("About", b => { b.innerHTML = '<div style="text-align:center;padding:48px 16px"><img src="/via-logo.svg" style="width:72px;margin-bottom:16px"/><div style="font-size:18px;font-weight:600">Via Browser</div><div style="font-size:12px;color:var(--fg-muted);margin-top:8px">Windows Desktop · Tauri + WebView2</div></div>'; }) },
+  { id: "about", label: "About", icon: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>', action: () => openPanel("About", b => { b.innerHTML = '<div style="text-align:center;padding:48px 16px"><img src="/via-logo.svg" style="width:72px;margin-bottom:16px"/><div style="font-size:18px;font-weight:600">Via Browser</div><div style="font-size:12px;color:var(--fg-muted);margin-top:8px">Windows · Tauri + WebView2</div></div>'; }) },
   { id: "incognito", label: "Incognito", icon: '<path d="M17 8h1a4 4 0 110 8h-1"/><path d="M3 8h14v8H3z"/>', action: () => { incognitoMode = !incognitoMode; showToast(incognitoMode ? "Incognito on" : "Incognito off"); refreshMenu(); }, active: () => incognitoMode },
   { id: "print", label: "Print", icon: '<polyline points="6 9 6 2 18 2 18 9"/><rect x="6" y="14" width="12" height="8"/>', action: () => { if (activeId) invoke("eval_tab", { id: activeId, js: "window.print()" }).then(() => showToast("Print dialog")).catch(() => showToast("Unavailable")); else showToast("Open a page first"); } },
   { id: "addhome", label: "Add to home", icon: '<path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/>', action: async () => { const t = tabs.find(x => x.id === activeId); if (!t?.url) { showToast("Open a page first"); return; } const l = prompt("Label:", t.title || ""); if (!l) return; const sc: HomeShortcut[] = settings?.homepage_shortcuts || []; sc.push({ label: l, url: t.url, icon: "🌐" }); await invoke("save_homepage_shortcuts", { shortcuts: sc }).catch(() => {}); showToast("Added"); } },
-  { id: "pageinfo", label: "Page info", icon: '<circle cx="12" cy="12" r="10"/><path d="M12 8h.01"/><path d="M11 12h1v4h1"/>', action: () => { const t = tabs.find(x => x.id === activeId); if (t) alert("Title: " + (t.title||"(none)") + "\nURL: " + (t.url||"(none)")); else showToast("Open a page first"); } },
-  { id: "zoom", label: "Zoom", icon: '<circle cx="11" cy="11" r="4"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>', action: () => { if (!activeId) { showToast("Open a page first"); return; } const z = prompt("Zoom (50-200%):", String(Math.round(textSize * 100))); if (!z) return; const v = Math.max(0.5, Math.min(2, parseInt(z)/100)); if (isNaN(v)) return; textSize = v; if (settings) settings.text_size = v; persistSettings(); invoke("eval_tab", { id: activeId, js: `document.body.style.zoom='${v}'` }).catch(() => {}); showToast("Zoom: " + Math.round(v*100)+"%"); } },
+  { id: "pageinfo", label: "Page info", icon: '<circle cx="12" cy="12" r="10"/><path d="M12 8h.01"/><path d="M11 12h1v4h1"/>', action: () => { const t = tabs.find(x => x.id === activeId); if (t) alert("Title: " + (t.title || "(none)") + "\nURL: " + (t.url || "(none)")); else showToast("Open a page first"); } },
+  { id: "zoom", label: "Zoom", icon: '<circle cx="11" cy="11" r="4"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>', action: () => { if (!activeId) { showToast("Open a page first"); return; } const z = prompt("Zoom (50-200%):", String(Math.round(textSize * 100))); if (!z) return; const v = Math.max(0.5, Math.min(2, parseInt(z) / 100)); if (isNaN(v)) return; textSize = v; if (settings) settings.text_size = v; persistSettings(); invoke("eval_tab", { id: activeId, js: `document.body.style.zoom='${v}'` }).catch(() => {}); showToast("Zoom: " + Math.round(v * 100) + "%"); } },
   { id: "savepage", label: "Save page", icon: '<path d="M23 4v6h-6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10"/>', action: async () => { const t = tabs.find(x => x.id === activeId); if (!t) { showToast("Open a page first"); return; } try { await invoke("eval_tab", { id: t.id, js: "window.__vh=document.documentElement.outerHTML" }); const h = await invoke<string>("eval_tab", { id: t.id, js: "window.__vh||''" }); if (h) { await invoke("save_page", { url: t.url, html: h, title: t.title || "page" }); showToast("Saved"); } } catch { showToast("Save failed"); } } },
   { id: "copyurl", label: "Copy URL", icon: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4"/>', action: () => { const t = tabs.find(x => x.id === activeId); if (t?.url) navigator.clipboard.writeText(t.url).then(() => showToast("Copied")); else showToast("No URL"); } },
   { id: "export", label: "Export data", icon: '<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/>', action: () => invoke<string>("export_backup").then(p => showToast("Exported: " + p.split(/[/\\]/).pop())).catch(() => showToast("Failed")) },
   { id: "import", label: "Import data", icon: '<polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>', action: async () => { try { await invoke("import_latest_backup"); settings = await invoke<Settings>("get_settings"); bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []); historyItems = await invoke<HistItem[]>("list_history", { q: null }).catch(() => []); downloads = await invoke<DlItem[]>("list_downloads").catch(() => []); showToast("Imported"); } catch { showToast("No backup found"); } } },
 ];
-
 function menuOrder(): string[] {
   const o = settings?.toolbar_layout?.visible;
   if (o?.length) { const v = o.filter(id => MENU.some(m => m.id === id)); const m = MENU.map(x => x.id).filter(id => !v.includes(id)); return [...v, ...m]; }
@@ -89,93 +87,115 @@ function menuOrder(): string[] {
 }
 
 /* ═══════ TABS — REAL WEBVIEWS ═══════ */
-async function createTab(url?: string): Promise<Tab> {
-  console.log("[Via] createTab", url);
-  const info = await invoke<TabInfo>("create_tab", { url: url || null });
-  const tab: Tab = { id: info.id, url: url || "", title: "New Tab", active: true };
-  tabs.push(tab);
-  activeId = info.id;
-  await invoke("select_tab", { id: info.id }).catch(() => {});
-  updateTabCount();
-  if (url) {
-    // Navigate the webview, then show it. tab-url event also reveals it.
-    await invoke("navigate_tab", { id: info.id, url }).catch(e => showToast("Navigation failed"));
-    // Show this webview, hide all others
-    for (const t of tabs) {
-      if (t.id === info.id) invoke("show_tab", { id: t.id }).catch(() => {});
-      else invoke("hide_tab", { id: t.id }).catch(() => {});
-    }
-    $("home").classList.add("hidden");
-  } else {
-    // Empty new tab — show the homepage
-    $("home").classList.remove("hidden");
-    for (const t of tabs) invoke("hide_tab", { id: t.id }).catch(() => {});
+
+/** Show ONLY the given tab's webview. Hide all others. */
+function showOnlyWebview(id: number) {
+  log("showOnlyWebview", id);
+  for (const t of tabs) {
+    if (t.id === id) invoke("show_tab", { id: t.id }).catch(e => log("show_tab error", e));
+    else invoke("hide_tab", { id: t.id }).catch(() => {});
   }
-  return tab;
+}
+
+/** Hide ALL tab webviews. */
+function hideAllWebviews() {
+  for (const t of tabs) invoke("hide_tab", { id: t.id }).catch(() => {});
+}
+
+function showHomePage() {
+  log("showHomePage");
+  $("home").classList.remove("hidden");
+  hideAllWebviews();
+}
+function hideHomePage() {
+  $("home").classList.add("hidden");
+}
+
+function createTab(url?: string): Promise<Tab> {
+  log("createTab url=", url, "tabs before=", tabs.length, "activeId before=", activeId);
+  return invoke<TabInfo>("create_tab", { url: url || null }).then(info => {
+    const tab: Tab = { id: info.id, url: url || "", title: "New Tab", active: true };
+    tabs.push(tab);
+    activeId = info.id;
+    log("created tab", info.id, "webview label", "tab-" + info.id, "tabs after=", tabs.length, "activeId after=", activeId);
+    if (url) {
+      // Navigate the webview to the URL
+      invoke("navigate_tab", { id: info.id, url }).catch(e => log("navigate_tab failed", e));
+      // Show only this webview, hide homepage
+      showOnlyWebview(info.id);
+      hideHomePage();
+    } else {
+      // Empty tab — show the homepage, hide all webviews
+      showHomePage();
+    }
+    updateTabCount();
+    return tab;
+  });
 }
 
 async function closeTab(id: number) {
+  log("closeTab", id);
   const tab = tabs.find(t => t.id === id);
   if (tab) await invoke("push_closed_tab", { url: tab.url || "about:blank", title: tab.title }).catch(() => {});
   await invoke("close_tab", { id }).catch(() => {});
   tabs = tabs.filter(t => t.id !== id);
   if (activeId === id) {
-    if (tabs.length) await switchTab(tabs[tabs.length - 1].id);
-    else { activeId = null; $("home").classList.remove("hidden"); for (const t of tabs) invoke("hide_tab", { id: t.id }); }
+    if (tabs.length) {
+      const last = tabs[tabs.length - 1];
+      log("restoring to tab", last.id);
+      await switchTab(last.id);
+    } else {
+      activeId = null;
+      log("last tab closed, showing homepage");
+      showHomePage();
+    }
   }
   updateTabCount();
 }
 
 async function switchTab(id: number) {
+  log("switchTab", id);
   tabs.forEach(t => t.active = false);
   const tab = tabs.find(t => t.id === id);
   if (tab) tab.active = true;
   activeId = id;
-  await invoke("select_tab", { id }).catch(() => {});
-  // Show this webview, hide others, hide homepage
-  $("home").classList.add("hidden");
-  for (const t of tabs) {
-    if (t.id === id) invoke("show_tab", { id: t.id }).catch(() => {});
-    else invoke("hide_tab", { id: t.id }).catch(() => {});
-  }
+  await invoke("select_tab", { id }).catch(e => log("select_tab failed", e));
+  // Show only this tab's webview, hide homepage
+  showOnlyWebview(id);
+  hideHomePage();
   updateNavButtons();
   updateTabCount();
 }
 
 function updateTabCount() { $("nav-tab-count").textContent = String(tabs.length || 1); }
+
+/** Always enable back/forward — let the webview handle history state internally. */
 function updateNavButtons() {
-  ["nav-back", "nav-fwd"].forEach(id => {
-    const el = $(id);
-    if (activeId) el.removeAttribute("disabled"); else el.setAttribute("disabled", "");
-  });
+  $("nav-back").removeAttribute("disabled");
+  $("nav-fwd").removeAttribute("disabled");
 }
 
-/* ═══════ SEARCH ═══════ */
+/* ═══════ SEARCH / NAVIGATION ═══════ */
 function handleSearch() {
   const input = $("home-input") as HTMLInputElement;
   const val = input.value.trim();
   if (!val) return;
   input.value = "";
-  console.log("[Via] search:", val);
+  log("search:", val);
   let url: string;
-  if (/^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val) || (val.includes('.') && !val.includes(' ') && !val.includes('http'))) {
+  if (/^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val) || (val.includes('.') && !val.includes(' ')))
     url = /^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val) ? val : "https://" + val;
-  } else {
+  else
     url = (ENGINES[searchEngine] || ENGINES.Google) + encodeURIComponent(val);
-  }
   openUrl(url);
 }
 
 async function openUrl(url: string) {
-  console.log("[Via] openUrl", url);
+  log("openUrl", url);
   if (activeId) {
     await invoke("navigate_tab", { id: activeId, url }).catch(() => showToast("Nav failed"));
-    // Show this tab's webview
-    $("home").classList.add("hidden");
-    for (const t of tabs) {
-      if (t.id === activeId) invoke("show_tab", { id: t.id }).catch(() => {});
-      else invoke("hide_tab", { id: t.id }).catch(() => {});
-    }
+    showOnlyWebview(activeId);
+    hideHomePage();
   } else {
     await createTab(url);
   }
@@ -184,8 +204,7 @@ async function openUrl(url: string) {
 function openSearch() {
   $("home").classList.remove("hidden");
   const input = $("home-input") as HTMLInputElement;
-  if (activeId) { const tab = tabs.find(t => t.id === activeId); input.value = tab?.url || ""; }
-  else input.value = "";
+  if (activeId) { const tab = tabs.find(t => t.id === activeId); input.value = tab?.url || ""; } else input.value = "";
   input.focus(); input.select();
 }
 
@@ -213,13 +232,17 @@ function closePanel() { $("panel-backdrop").classList.remove("open"); $("panel")
 /* ═══════ PANEL RENDERERS ═══════ */
 function renderBookmarks(b: HTMLElement) {
   if (!bookmarks.length) { b.innerHTML = '<div class="empty-state">No bookmarks yet</div>'; return; }
-  b.innerHTML = '<div class="pp-list">' + bookmarks.map(x => `<div class="pp-item" data-u="${esc(x.url)}"><div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg></div><div class="pi-info"><div class="pi-title">${esc(x.title||x.url)}</div><div class="pi-sub">${esc(x.url)}</div></div><button class="pi-action" data-d="${esc(x.url)}">✕</button></div>`).join("") + "</div>";
-  b.querySelectorAll(".pp-item").forEach(el => el.addEventListener("click", e => { if ((e.target as HTMLElement).closest("[data-d]")) { invoke("remove_bookmark", { url: el.getAttribute("data-d")! }).then(() => { bookmarks = bookmarks.filter(x => x.url !== el.getAttribute("data-d")!); renderBookmarks(b); showToast("Removed"); }); return; } closePanel(); openUrl(el.getAttribute("data-u")!); }));
+  b.innerHTML = '<div class="pp-list">' + bookmarks.map(x => `<div class="pp-item" data-u="${esc(x.url)}"><div class="pi-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M19 21l-7-5-7 5V5a2 2 0 012-2h10a2 2 0 012 2z"/></svg></div><div class="pi-info"><div class="pi-title">${esc(x.title || x.url)}</div><div class="pi-sub">${esc(x.url)}</div></div><button class="pi-action" data-d="${esc(x.url)}">✕</button></div>`).join("") + "</div>";
+  b.querySelectorAll(".pp-item").forEach(el => el.addEventListener("click", e => {
+    if ((e.target as HTMLElement).closest("[data-d]")) { invoke("remove_bookmark", { url: el.getAttribute("data-d")! }).then(() => { bookmarks = bookmarks.filter(x => x.url !== el.getAttribute("data-d")!); renderBookmarks(b); showToast("Removed"); }); return; }
+    closePanel(); openUrl(el.getAttribute("data-u")!);
+  }));
 }
 function renderHistory(b: HTMLElement) {
   if (!historyItems.length) { b.innerHTML = '<div class="empty-state">No history</div>'; return; }
-  const g: Record<string, HistItem[]> = {}; historyItems.forEach(h => { const d = new Date(h.ts*1000).toISOString().slice(0,10); (g[d] = g[d]||[]).push(h); });
-  b.innerHTML = '<div style="padding:8px 16px"><button class="btn" id="chb">Clear</button></div>' + Object.entries(g).map(([d,items]) => `<div class="sec-title">${d}</div><div class="pp-list">${items.map(h => `<div class="pp-item" data-u="${esc(h.url)}"><div class="pi-info"><div class="pi-title">${esc(h.title||h.url)}</div><div class="pi-sub" style="color:var(--accent)">${esc(h.url)}</div></div></div>`).join("")}</div>`).join("");
+  const g: Record<string, HistItem[]> = {};
+  historyItems.forEach(h => { const d = new Date(h.ts * 1000).toISOString().slice(0, 10); (g[d] = g[d] || []).push(h); });
+  b.innerHTML = '<div style="padding:8px 16px"><button class="btn" id="chb">Clear</button></div>' + Object.entries(g).map(([d, items]) => `<div class="sec-title">${d}</div><div class="pp-list">${items.map(h => `<div class="pp-item" data-u="${esc(h.url)}"><div class="pi-info"><div class="pi-title">${esc(h.title || h.url)}</div><div class="pi-sub" style="color:var(--accent)">${esc(h.url)}</div></div></div>`).join("")}</div>`).join("");
   b.querySelector("#chb")?.addEventListener("click", async () => { await invoke("clear_history"); historyItems = []; renderHistory(b); showToast("Cleared"); });
   b.querySelectorAll(".pp-item").forEach(el => el.addEventListener("click", () => { closePanel(); openUrl(el.getAttribute("data-u")!); }));
 }
@@ -238,25 +261,25 @@ function renderScriptsRoot(b: HTMLElement) {
 function renderMyScripts(b: HTMLElement) {
   const sc = settings?.scripts || [];
   if (!sc.length) { b.innerHTML = '<div class="empty-state">No scripts</div><div style="padding:16px"><button class="btn primary" id="asb">+ Add</button></div>'; } else {
-    b.innerHTML = '<div class="pp-list">' + sc.map(s => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(s.name)}</div><div class="pi-sub">${esc(s.match_urls||"All")}</div></div><button class="pi-action" data-ds="${esc(s.id)}">✕</button></div>`).join("") + '</div><div style="padding:16px"><button class="btn primary" id="asb">+ Add</button></div>';
+    b.innerHTML = '<div class="pp-list">' + sc.map(s => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(s.name)}</div><div class="pi-sub">${esc(s.match_urls || "All")}</div></div><button class="pi-action" data-ds="${esc(s.id)}">✕</button></div>`).join("") + '</div><div style="padding:16px"><button class="btn primary" id="asb">+ Add</button></div>';
     b.querySelectorAll("[data-ds]").forEach(el => el.addEventListener("click", async () => { await invoke("delete_script", { id: el.getAttribute("data-ds")! }); if (settings) settings.scripts = settings.scripts.filter(s => s.id !== el.getAttribute("data-ds")!); renderMyScripts(b); showToast("Deleted"); }));
   }
-  b.querySelector("#asb")?.addEventListener("click", () => { const n = prompt("Name:"); if (!n) return; const mu = prompt("Match URLs (empty=all):") || ""; const c = prompt("Code:"); if (!c) return; const s: UserScript = { id: "s"+Date.now(), name: n, match_urls: mu, code: c, enabled: true }; if (!settings) settings = { ...({} as Settings), scripts: [] }; settings.scripts.push(s); invoke("save_script", { script: s }).then(() => { showToast("Saved"); renderMyScripts(b); }); });
+  b.querySelector("#asb")?.addEventListener("click", () => { const n = prompt("Name:"); if (!n) return; const mu = prompt("Match URLs (empty=all):") || ""; const c = prompt("Code:"); if (!c) return; const s: UserScript = { id: "s" + Date.now(), name: n, match_urls: mu, code: c, enabled: true }; if (!settings) settings = { ...({} as Settings), scripts: [] }; settings.scripts.push(s); invoke("save_script", { script: s }).then(() => { showToast("Saved"); renderMyScripts(b); }); });
 }
-const STORE = [{ name: "AdGuard Extra", url: "https://greasyfork.org/scripts/38972", desc: "Remove blocked elements" }, { name: "Dark Reader", url: "https://greasyfork.org/scripts/22190", desc: "Dark mode for all sites" }, { name: "Search Engine Jump", url: "https://greasyfork.org/scripts/426035", desc: "Jump between search engines" }, { name: "Bilibili Evolved", url: "https://greasyfork.org/scripts/452100", desc: "Enhanced bilibili" }];
+const STORE = [{ name: "AdGuard Extra", url: "https://greasyfork.org/scripts/38972", desc: "Remove blocked elements" }, { name: "Dark Reader", url: "https://greasyfork.org/scripts/22190", desc: "Dark mode for all sites" }, { name: "Search Engine Jump", url: "https://greasyfork.org/scripts/426035", desc: "Jump between engines" }, { name: "Bilibili Evolved", url: "https://greasyfork.org/scripts/452100", desc: "Enhanced bilibili" }];
 function renderScriptStore(b: HTMLElement) {
-  const installed = new Set((settings?.scripts||[]).map(s => s.name));
-  b.innerHTML = STORE.map(s => `<div class="script-store-item"><div class="script-store-name">${esc(s.name)}</div><div class="script-store-desc">${esc(s.desc)}</div><div class="script-store-actions"><button class="${installed.has(s.name)?'installed':''}" data-i="${esc(s.name)}">${installed.has(s.name)?"Installed ✓":"Install"}</button></div></div>`).join("");
-  b.querySelectorAll("[data-i]").forEach(el => el.addEventListener("click", () => { const s = STORE.find(x => x.name === el.getAttribute("data-i")!); if (!s) return; if (installed.has(s.name)) { openUrl(s.url); closePanel(); return; } const us: UserScript = { id: "s"+Date.now(), name: s.name, match_urls: "", code: "", enabled: true }; if (!settings) settings = { ...({} as Settings), scripts: [] }; settings.scripts.push(us); invoke("save_script", { script: us }).then(() => { showToast("Installed: "+s.name); renderScriptStore(b); openUrl(s.url); }); }));
+  const installed = new Set((settings?.scripts || []).map(s => s.name));
+  b.innerHTML = STORE.map(s => `<div class="script-store-item"><div class="script-store-name">${esc(s.name)}</div><div class="script-store-desc">${esc(s.desc)}</div><div class="script-store-actions"><button class="${installed.has(s.name) ? 'installed' : ''}" data-i="${esc(s.name)}">${installed.has(s.name) ? "Installed ✓" : "Install"}</button></div></div>`).join("");
+  b.querySelectorAll("[data-i]").forEach(el => el.addEventListener("click", () => { const s = STORE.find(x => x.name === el.getAttribute("data-i")!); if (!s) return; if (installed.has(s.name)) { openUrl(s.url); closePanel(); return; } const us: UserScript = { id: "s" + Date.now(), name: s.name, match_urls: "", code: "", enabled: true }; if (!settings) settings = { ...({} as Settings), scripts: [] }; settings.scripts.push(us); invoke("save_script", { script: us }).then(() => { showToast("Installed: " + s.name); renderScriptStore(b); openUrl(s.url); }); }));
 }
 function renderSiteConfig(b: HTMLElement) {
   const sites = settings?.sites || [];
   if (!sites.length) { b.innerHTML = '<div class="empty-state">No per-site overrides</div>'; return; }
-  b.innerHTML = '<div class="pp-list">' + sites.map(s => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(s.host)}</div><div class="pi-sub">UA: ${esc(s.ua_mode||"Default")} · Ads: ${s.adblock_enabled?"On":"Off"}</div></div><button class="pi-action" data-dh="${esc(s.host)}">✕</button></div>`).join("") + "</div>";
+  b.innerHTML = '<div class="pp-list">' + sites.map(s => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(s.host)}</div><div class="pi-sub">UA: ${esc(s.ua_mode || "Default")} · Ads: ${s.adblock_enabled ? "On" : "Off"}</div></div><button class="pi-action" data-dh="${esc(s.host)}">✕</button></div>`).join("") + "</div>";
   b.querySelectorAll("[data-dh]").forEach(el => el.addEventListener("click", async () => { await invoke("delete_site_config", { host: el.getAttribute("data-dh")! }); if (settings) settings.sites = settings.sites.filter(s => s.host !== el.getAttribute("data-dh")!); renderSiteConfig(b); showToast("Removed"); }));
 }
 function renderCookies(b: HTMLElement) {
-  invoke<any[]>("get_cookies").then(c => { if (!c.length) { b.innerHTML = '<div class="empty-state">No cookies</div>'; return; } b.innerHTML = '<div class="pp-list">' + c.slice(0,50).map(x => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(x.name||"?")}</div><div class="pi-sub">${esc(x.domain||"?")}</div></div></div>`).join("") + '</div><div style="padding:16px"><button class="btn" id="ccb">Clear all</button></div>'; b.querySelector("#ccb")?.addEventListener("click", async () => { await invoke("clear_cookies"); renderCookies(b); showToast("Cleared"); }); }).catch(() => b.innerHTML = '<div class="empty-state">Could not read cookies</div>');
+  invoke<any[]>("get_cookies").then(c => { if (!c.length) { b.innerHTML = '<div class="empty-state">No cookies</div>'; return; } b.innerHTML = '<div class="pp-list">' + c.slice(0, 50).map(x => `<div class="pp-item"><div class="pi-info"><div class="pi-title">${esc(x.name || "?")}</div><div class="pi-sub">${esc(x.domain || "?")}</div></div></div>`).join("") + '</div><div style="padding:16px"><button class="btn" id="ccb">Clear all</button></div>'; b.querySelector("#ccb")?.addEventListener("click", async () => { await invoke("clear_cookies"); renderCookies(b); showToast("Cleared"); }); }).catch(() => b.innerHTML = '<div class="empty-state">Could not read cookies</div>');
 }
 function renderCustomize(b: HTMLElement) {
   const order = menuOrder();
@@ -264,38 +287,30 @@ function renderCustomize(b: HTMLElement) {
   const list = b.querySelector("#cv")!; let d: HTMLElement | null = null;
   list.addEventListener("dragstart", e => { d = (e.target as HTMLElement).closest(".drag-item"); if (d) d.style.opacity = "0.5"; });
   list.addEventListener("dragend", () => { if (d) d.style.opacity = ""; d = null; });
-  list.addEventListener("dragover", e => { e.preventDefault(); const t = (e.target as HTMLElement).closest(".drag-item") as HTMLElement; if (t && t !== d && d) { const r = t.getBoundingClientRect(); e.clientY < r.top + r.height/2 ? list.insertBefore(d, t) : list.insertBefore(d, t.nextSibling); } });
+  list.addEventListener("dragover", e => { e.preventDefault(); const t = (e.target as HTMLElement).closest(".drag-item") as HTMLElement; if (t && t !== d && d) { const r = t.getBoundingClientRect(); e.clientY < r.top + r.height / 2 ? list.insertBefore(d, t) : list.insertBefore(d, t.nextSibling); } });
   list.addEventListener("dragend", async () => { const o: string[] = []; list.querySelectorAll(".drag-item").forEach(el => o.push(el.getAttribute("data-mid")!)); if (settings?.toolbar_layout) settings.toolbar_layout.visible = o; await persistSettings(); refreshMenu(); });
   b.querySelector("#rmb")?.addEventListener("click", async () => { if (settings?.toolbar_layout) settings.toolbar_layout.visible = []; await persistSettings(); renderCustomize(b); refreshMenu(); showToast("Reset"); });
 }
 function renderSettings(b: HTMLElement) {
   const s = settings; if (!s) return;
   b.innerHTML = `<div class="mg-list">
-    <div class="sec-title">General</div>
-    <div class="mg-item" data-s="search">Search: ${searchEngine} <span class="chev">›</span></div>
-    <div class="sec-title">Appearance</div>
-    <div class="mg-item" data-s="night">Night mode <span class="switch ${nightMode?'on':''}"></span></div>
-    <div class="mg-item" data-s="text">Text size <span style="margin-left:auto;color:var(--fg-muted)">${Math.round(s.text_size*100)}%</span></div>
-    <div class="sec-title">Privacy</div>
-    <div class="mg-item" data-s="ad">Ad blocking <span class="switch ${s.adblock_enabled?'on':''}"></span></div>
-    <div class="mg-item" data-s="dt">Desktop mode <span class="switch ${s.desktop_mode?'on':''}"></span></div>
-    <div class="sec-title">Startup</div>
-    <div class="mg-item" data-s="rt">Restore tabs <span class="switch ${s.restore_tabs?'on':''}"></span></div>
-    <div class="sec-title">Data</div>
-    <div class="mg-item" data-s="ex">Export backup <span class="chev">›</span></div>
-    <div class="mg-item" data-s="im">Import backup <span class="chev">›</span></div>
+    <div class="sec-title">General</div><div class="mg-item" data-s="search">Search: ${searchEngine} <span class="chev">›</span></div>
+    <div class="sec-title">Appearance</div><div class="mg-item" data-s="night">Night mode <span class="switch ${nightMode ? 'on' : ''}"></span></div><div class="mg-item" data-s="text">Text size <span style="margin-left:auto;color:var(--fg-muted)">${Math.round(s.text_size * 100)}%</span></div>
+    <div class="sec-title">Privacy</div><div class="mg-item" data-s="ad">Ad blocking <span class="switch ${s.adblock_enabled ? 'on' : ''}"></span></div><div class="mg-item" data-s="dt">Desktop mode <span class="switch ${s.desktop_mode ? 'on' : ''}"></span></div>
+    <div class="sec-title">Startup</div><div class="mg-item" data-s="rt">Restore tabs <span class="switch ${s.restore_tabs ? 'on' : ''}"></span></div>
+    <div class="sec-title">Data</div><div class="mg-item" data-s="ex">Export backup <span class="chev">›</span></div><div class="mg-item" data-s="im">Import backup <span class="chev">›</span></div>
   </div>`;
   b.querySelectorAll(".switch").forEach(el => el.addEventListener("click", e => { e.stopPropagation(); el.classList.toggle("on"); }));
   b.querySelectorAll(".mg-item[data-s]").forEach(el => el.addEventListener("click", () => {
     const k = el.getAttribute("data-s")!; const s2 = settings!;
-    if (k === "search") { const e = Object.keys(ENGINES); searchEngine = e[(e.indexOf(searchEngine)+1)%e.length]; s2.search_engine = searchEngine; persistSettings(); showToast("Search: "+searchEngine); renderSettings(b); }
+    if (k === "search") { const e = Object.keys(ENGINES); searchEngine = e[(e.indexOf(searchEngine) + 1) % e.length]; s2.search_engine = searchEngine; persistSettings(); showToast("Search: " + searchEngine); renderSettings(b); }
     else if (k === "night") { nightMode = !nightMode; s2.night_mode = nightMode; invoke("set_night_mode", { enabled: nightMode }); persistSettings(); }
-    else if (k === "text") { textSize = textSize >= 2 ? 0.5 : textSize+0.25; s2.text_size = textSize; persistSettings(); showToast(Math.round(textSize*100)+"%"); renderSettings(b); }
+    else if (k === "text") { textSize = textSize >= 2 ? 0.5 : textSize + 0.25; s2.text_size = textSize; persistSettings(); showToast(Math.round(textSize * 100) + "%"); renderSettings(b); }
     else if (k === "ad") { adblockOn = !adblockOn; s2.adblock_enabled = adblockOn; persistSettings(); }
     else if (k === "dt") { desktopMode = !desktopMode; s2.desktop_mode = desktopMode; persistSettings(); }
     else if (k === "rt") { restoreTabs = !restoreTabs; s2.restore_tabs = restoreTabs; persistSettings(); }
-    else if (k === "ex") invoke<string>("export_backup").then(p => showToast("Saved: "+p.split(/[/\\]/).pop())).catch(() => showToast("Failed"));
-    else if (k === "im") { invoke("import_latest_backup").then(async () => { settings = await invoke<Settings>("get_settings"); bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(()=>[]); historyItems = await invoke<HistItem[]>("list_history",{q:null}).catch(()=>[]); downloads = await invoke<DlItem[]>("list_downloads").catch(()=>[]); showToast("Imported"); }).catch(() => showToast("No backup")); }
+    else if (k === "ex") invoke<string>("export_backup").then(p => showToast("Saved: " + p.split(/[/\\]/).pop())).catch(() => showToast("Failed"));
+    else if (k === "im") { invoke("import_latest_backup").then(async () => { settings = await invoke<Settings>("get_settings"); bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []); historyItems = await invoke<HistItem[]>("list_history", { q: null }).catch(() => []); downloads = await invoke<DlItem[]>("list_downloads").catch(() => []); showToast("Imported"); }).catch(() => showToast("No backup")); }
   }));
 }
 function persistSettings() {
@@ -308,13 +323,13 @@ function persistSettings() {
 /* ═══════ EVENTS ═══════ */
 function setupEvents() {
   listen<{ id: number; url: string }>("tab-url", ev => {
-    console.log("[Via] tab-url", ev.payload.id, ev.payload.url);
+    log("tab-url", ev.payload.id, ev.payload.url);
     const tab = tabs.find(t => t.id === ev.payload.id);
     if (tab) {
       tab.url = ev.payload.url;
-      if (tab.id === activeId && !ev.payload.url.startsWith("about:")) {
-        // Page loaded — hide homepage, show webview
-        $("home").classList.add("hidden");
+      // Page loaded — hide homepage, ensure this webview is visible
+      if (tab.id === activeId) {
+        hideHomePage();
       }
       if (!ev.payload.url.startsWith("about:")) invoke("add_history", { url: ev.payload.url, title: tab.title }).catch(() => {});
     }
@@ -324,20 +339,18 @@ function setupEvents() {
     if (tab) tab.title = ev.payload.title;
   });
   listen<{ url: string }>("new-window-request", ev => createTab(ev.payload.url));
-
-  // Download events
   listen<any>("download-started", ev => {
-    console.log("[Via] download-started:", ev.payload);
+    log("download-started", ev.payload);
     const name = ev.payload.path?.split(/[/\\]/)?.pop() || "file";
-    downloads.unshift({ url: ev.payload.url||"", path: ev.payload.path||"", title: name, size: 0, done: false });
-    showToast("⬇ Downloading: " + name);
+    downloads.unshift({ url: ev.payload.url || "", path: ev.payload.path || "", title: name, size: 0, done: false });
+    showToast("⬇ Download: " + name);
   });
   listen<any>("download-progress", ev => {
     const p = ev.payload;
     if (p.done) {
       const dl = downloads.find(d => d.url === p.url);
       if (dl) { dl.done = true; dl.path = p.path || dl.path; }
-      showToast(p.success ? "✓ Download complete" : "✗ Download failed");
+      showToast(p.success ? "✓ Complete" : "✗ Failed");
       refreshDownloads();
     }
   });
@@ -349,13 +362,13 @@ function setupKeyboard() {
   document.addEventListener("keydown", e => {
     const c = e.ctrlKey || e.metaKey;
     if (e.key === "Escape") { if ($("panel").classList.contains("open")) closePanel(); else if ($("side-menu").classList.contains("open")) closeMenu(); }
-    else if (c && e.key === "t") { e.preventDefault(); createTab(); }
+    else if (c && e.key === "t") { e.preventDefault(); log("Ctrl+T"); createTab(); }
     else if (c && e.shiftKey && e.key === "T") { e.preventDefault(); invoke<ClosedTab | null>("pop_closed_tab").then(c => { if (c) { createTab(c.url); showToast("Restored"); } else showToast("No closed tabs"); }); }
     else if (c && e.key === "w") { e.preventDefault(); if (activeId) closeTab(activeId); }
     else if (c && e.key === "l") { e.preventDefault(); openSearch(); }
     else if (c && e.key === "r") { e.preventDefault(); if (activeId) invoke("eval_tab", { id: activeId, js: "location.reload()" }); }
     else if (c && e.key === "f") { e.preventDefault(); if (activeId) { const q = prompt("Find:"); if (q) invoke("eval_tab", { id: activeId, js: `window.find(${JSON.stringify(q)})` }).catch(() => {}); } }
-    else if (c && e.key === "d") { e.preventDefault(); const t = tabs.find(x => x.id === activeId); if (t?.url) { invoke("add_bookmark", { url: t.url, title: t.title||t.url, folder: null }).then(() => { bookmarks.push({ url: t.url, title: t.title||t.url, folder: "" }); showToast("Bookmarked"); }); } }
+    else if (c && e.key === "d") { e.preventDefault(); const t = tabs.find(x => x.id === activeId); if (t?.url) { invoke("add_bookmark", { url: t.url, title: t.title || t.url, folder: null }).then(() => { bookmarks.push({ url: t.url, title: t.title || t.url, folder: "" }); showToast("Bookmarked"); }); } }
     else if (c && e.key === "h") { e.preventDefault(); openPanel("History", renderHistory); }
     else if (e.key === "F11") { e.preventDefault(); const w = (window as any).__TAURI__?.window?.appWindow; if (w) w.isFullscreen().then((f: boolean) => w.setFullscreen(!f)); }
   });
@@ -364,13 +377,13 @@ function setupKeyboard() {
 /* ═══════ SESSION ═══════ */
 function saveSession() {
   if (!restoreTabs || !tabs.length) return;
-  invoke("save_session", { entries: tabs.map((t,i) => ({ url: t.url||"about:blank", title: t.title, active: t.id===activeId, order: i })) }).catch(() => {});
+  invoke("save_session", { entries: tabs.map((t, i) => ({ url: t.url || "about:blank", title: t.title, active: t.id === activeId, order: i })) }).catch(() => {});
 }
 
 /* ═══════ TABS PANEL ═══════ */
 function renderTabs(b: HTMLElement) {
   if (!tabs.length) { b.innerHTML = '<div class="empty-state">No open tabs</div><div style="padding:16px"><button class="btn primary" id="ntb">+ New Tab</button></div>'; b.querySelector("#ntb")?.addEventListener("click", () => { closePanel(); createTab(); }); return; }
-  b.innerHTML = '<div class="pp-list">' + tabs.map(t => `<div class="pp-item${t.id===activeId?' selected':''}" data-t="${t.id}"><div class="pi-icon">${t.id===activeId?"▶":"◻"}</div><div class="pi-info"><div class="pi-title">${esc(t.title||"New Tab")}</div><div class="pi-sub">${esc(t.url||"about:blank")}</div></div><button class="pi-action" data-ct="${t.id}">✕</button></div>`).join("") + '</div><div style="padding:16px"><button class="btn primary" id="ntb">+ New Tab</button></div>';
+  b.innerHTML = '<div class="pp-list">' + tabs.map(t => `<div class="pp-item${t.id === activeId ? ' selected' : ''}" data-t="${t.id}"><div class="pi-icon">${t.id === activeId ? "▶" : "◻"}</div><div class="pi-info"><div class="pi-title">${esc(t.title || "New Tab")}</div><div class="pi-sub">${esc(t.url || "about:blank")}</div></div><button class="pi-action" data-ct="${t.id}">✕</button></div>`).join("") + '</div><div style="padding:16px"><button class="btn primary" id="ntb">+ New Tab</button></div>';
   b.querySelector("#ntb")?.addEventListener("click", () => { closePanel(); createTab(); });
   b.querySelectorAll(".pp-item[data-t]").forEach(el => el.addEventListener("click", e => { if ((e.target as HTMLElement).closest("[data-ct]")) return; closePanel(); switchTab(parseInt(el.getAttribute("data-t")!)); }));
   b.querySelectorAll("[data-ct]").forEach(el => el.addEventListener("click", async e => { e.stopPropagation(); await closeTab(parseInt(el.getAttribute("data-ct")!)); renderTabs(b); }));
@@ -379,31 +392,34 @@ function renderTabs(b: HTMLElement) {
 /* ═══════ BOOT ═══════ */
 async function boot() {
   settings = await invoke<Settings>("get_settings").catch(() => null);
-  if (settings) { searchEngine = settings.search_engine||"Google"; nightMode = settings.night_mode; desktopMode = settings.desktop_mode; textSize = settings.text_size||1; showImages = settings.show_images!==false; adblockOn = settings.adblock_enabled!==false; restoreTabs = settings.restore_tabs||false; }
+  if (settings) { searchEngine = settings.search_engine || "Google"; nightMode = settings.night_mode; desktopMode = settings.desktop_mode; textSize = settings.text_size || 1; showImages = settings.show_images !== false; adblockOn = settings.adblock_enabled !== false; restoreTabs = settings.restore_tabs || false; }
   bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
   historyItems = await invoke<HistItem[]>("list_history", { q: null }).catch(() => []);
   downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
   setupEvents(); setupKeyboard();
-  // Wire DOM once
-  $("nav-back").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.back()" }).catch(() => {}); });
-  $("nav-fwd").addEventListener("click", () => { if (activeId) invoke("eval_tab", { id: activeId, js: "history.forward()" }).catch(() => {}); });
-  $("nav-home").addEventListener("click", () => { if (activeId) { closePanel(); closeMenu(); $("home").classList.remove("hidden"); for (const t of tabs) invoke("hide_tab", { id: t.id }).catch(() => {}); } else openSearch(); });
-  $("nav-tabs").addEventListener("click", () => openPanel("Tabs ("+tabs.length+")", renderTabs));
+
+  $("nav-back").addEventListener("click", () => { if (activeId) { log("nav-back click, activeId=", activeId); invoke("eval_tab", { id: activeId, js: "history.back()" }).catch(() => {}); } });
+  $("nav-fwd").addEventListener("click", () => { if (activeId) { log("nav-fwd click, activeId=", activeId); invoke("eval_tab", { id: activeId, js: "history.forward()" }).catch(() => {}); } });
+  $("nav-home").addEventListener("click", () => showHomePage());
+  $("nav-tabs").addEventListener("click", () => openPanel("Tabs (" + tabs.length + ")", renderTabs));
   $("nav-menu").addEventListener("click", () => { closePanel(); openMenu(); });
   $("home-search").addEventListener("click", e => { e.stopPropagation(); ($("home-input") as HTMLInputElement).focus(); });
   $("home-input").addEventListener("keydown", e => { if (e.key === "Enter") handleSearch(); e.stopPropagation(); });
-  $("qr-btn").addEventListener("click", async () => { try { const t = await invoke<string>("qr_pick_and_scan"); if (t && confirm("QR: "+t+"\nOpen?")) openUrl(/^https?:\/\//i.test(t) ? t : "https://www.google.com/search?q="+encodeURIComponent(t)); } catch {} });
+  $("qr-btn").addEventListener("click", async () => { try { const t = await invoke<string>("qr_pick_and_scan"); if (t && confirm("QR: " + t + "\nOpen?")) openUrl(/^https?:\/\//i.test(t) ? t : "https://www.google.com/search?q=" + encodeURIComponent(t)); } catch { } });
   $("menu-backdrop").addEventListener("click", closeMenu);
   $("menu-exit").addEventListener("click", () => { closeMenu(); closePanel(); });
   $("menu-collapse").addEventListener("click", closeMenu);
   $("panel-back").addEventListener("click", closePanel);
   $("panel-backdrop").addEventListener("click", closePanel);
   window.addEventListener("beforeunload", () => saveSession());
+
   if (restoreTabs) {
     const session = await invoke<SessionEntry[]>("restore_session").catch(() => []);
-    if (session.length) { for (const e of [...session].sort((a,b) => a.order - b.order)) { if (e.url && e.url !== "about:blank") await createTab(e.url); } const ae = session.find(s => s.active); if (ae) { const t = tabs.find(x => x.url === ae.url); if (t) await switchTab(t.id); } }
+    if (session.length) { for (const e of [...session].sort((a, b) => a.order - b.order)) { if (e.url && e.url !== "about:blank") await createTab(e.url); } const ae = session.find(s => s.active); if (ae) { const t = tabs.find(x => x.url === ae.url); if (t) await switchTab(t.id); } }
   }
-  updateTabCount(); $("home").classList.remove("hidden");
-  console.log("[Via] Boot OK");
+  updateTabCount();
+  // Show homepage on boot
+  $("home").classList.remove("hidden");
+  log("Boot complete, tabs:", tabs.length);
 }
 boot();

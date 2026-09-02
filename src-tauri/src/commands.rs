@@ -317,8 +317,9 @@ pub async fn create_tab(
                     //   2. response-content-disposition / filename= query params
                     //   3. URL path segment (direct file URLs)
                     //   4. fallback to a timestamped name
-                    let fname = probe_download_filename(&url)
-                        .or_else(|| real_filename(&url))
+                    // Skip blocking probe_download_filename — it freezes the WebView2
+                    // callback thread. Use URL-based real_filename (non-blocking) instead.
+                    let fname = real_filename(&url)
                         .unwrap_or_else(|| {
                             let ts = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)

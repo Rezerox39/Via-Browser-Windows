@@ -22,7 +22,20 @@ type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
 type ClosedTab = { url: string; title: string; ts: number };
 type SessionEntry = { url: string; title: string; active: boolean; order: number };
-const ENGINES: Record<string, string> = { Google: "https://www.google.com/search?q=", DuckDuckGo: "https://duckduckgo.com/?q=", Bing: "https://www.bing.com/search?q=", Baidu: "https://www.baidu.com/s?wd=" };
+const ENGINES: Record<string, string> = {
+  Google: "https://www.google.com/search?q=",
+  DuckDuckGo: "https://duckduckgo.com/?q=",
+  Bing: "https://www.bing.com/search?q=",
+  Baidu: "https://www.baidu.com/s?wd=",
+  Yahoo: "https://search.yahoo.com/search?p=",
+  Startpage: "https://www.startpage.com/sp/search?query=",
+  Ecosia: "https://www.ecosia.org/search?q=",
+  Yandex: "https://yandex.com/search/?text=",
+  Brave: "https://search.brave.com/search?q=",
+  Wikipedia: "https://en.wikipedia.org/w/index.php?search=",
+  Qwant: "https://www.qwant.com/?q=",
+  SearX: "https://searx.be/search?q=",
+};
 
 /* ═══════ State ═══════ */
 let tabs: Tab[] = [];
@@ -354,7 +367,22 @@ function renderSettings(b: HTMLElement) {
   b.querySelectorAll(".switch").forEach(el => el.addEventListener("click", e => { e.stopPropagation(); el.classList.toggle("on"); }));
   b.querySelectorAll(".mg-item[data-s]").forEach(el => el.addEventListener("click", () => {
     const k = el.getAttribute("data-s")!; const s2 = settings!;
-    if (k === "search") { const e = Object.keys(ENGINES); searchEngine = e[(e.indexOf(searchEngine) + 1) % e.length]; s2.search_engine = searchEngine; persistSettings(); showToast("Search: " + searchEngine); renderSettings(b); }
+    if (k === "search") {
+      openPanel("Search engine", sb => {
+        const engines = Object.keys(ENGINES);
+        sb.innerHTML = '<div class="pp-list">' + engines.map(name =>
+          '<div class="pp-item' + (name === searchEngine ? ' selected' : '') + '" data-eng="' + esc(name) + '"><div class="pi-info"><div class="pi-title">' + esc(name) + '</div><div class="pi-sub">' + esc(ENGINES[name]) + '</div></div></div>'
+        ).join("") + '</div>';
+        sb.querySelectorAll(".pp-item").forEach(el => el.addEventListener("click", () => {
+          searchEngine = el.getAttribute("data-eng")!;
+          s2.search_engine = searchEngine;
+          persistSettings();
+          showToast("Search: " + searchEngine);
+          closePanel();
+          closePanel();
+        }));
+      });
+    }
     else if (k === "night") { nightMode = !nightMode; s2.night_mode = nightMode; invoke("set_night_mode", { enabled: nightMode }); persistSettings(); renderSettings(b); }
     else if (k === "text") { textSize = textSize >= 2 ? 0.5 : textSize + 0.25; s2.text_size = textSize; persistSettings(); showToast(Math.round(textSize * 100) + "%"); renderSettings(b); }
     else if (k === "ad") { adblockOn = !adblockOn; s2.adblock_enabled = adblockOn; persistSettings(); renderSettings(b); }

@@ -654,15 +654,26 @@ pub fn set_night_mode(
 
 pub fn normalize_url(input: &str) -> String {
     let t = input.trim();
-    if t.is_empty() {
-        return settings::DEFAULT_HOMEPAGE.to_string();
+    if t.is_empty() || t == "about:blank" {
+        return "about:blank".to_string();
     }
-    if t.contains('.') && !t.contains(' ') {
-        if t.starts_with("http://") || t.starts_with("https://") {
-            return t.to_string();
-        }
-        return format!("https://{}", t);
+    // Allow about:, data:, javascript: schemes through untouched
+    if t.starts_with("about:") || t.starts_with("data:") || t.starts_with("javascript:") {
+        return t.to_string();
     }
+    if t.starts_with("http://") || t.starts_with("https://") {
+        return t.to_string();
+    }
+    // IP literals and localhost
+    if t.starts_with("localhost") || is_ip_literal(t) {
+        if t.contains("://") { return t.to_string(); }
+        return format!("http://{t}");
+    }
+    // domain-like: contains a dot, no spaces
+    if t.contains('.') && !t.contains(' ') && !t.starts_with('/') && looks_like_host(t) {
+        return format!("https://{t}");
+    }
+    // Otherwise: search query
     let q = urlencoding(t);
     format!("https://www.google.com/search?q={q}")
 }

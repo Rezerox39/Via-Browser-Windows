@@ -259,21 +259,6 @@ pub async fn create_tab(
 ) -> Result<TabInfo, String> {
     let window = main_window(&app)?;
     let s = sstate.0.lock().unwrap().clone();
-
-    // NUCLEAR BLOCK: ALL webview creation is disabled to prove root cause.
-    // If the homepage appears, child webviews are the problem.
-    let raw_url = url.as_deref().unwrap_or("");
-    {
-        use std::io::Write;
-        let log = format!("[{:?}] create_tab BLOCKED url={:?}\n",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-            raw_url);
-        let _ = std::fs::OpenOptions::new().create(true).append(true)
-            .open("via-debug.log")
-            .and_then(|mut f| f.write_all(log.as_bytes()));
-    }
-    return Err(format!("ALL webview creation blocked. URL was: {}", raw_url).into());
-
     let mut idx = state.next_id.lock().unwrap();
     *idx += 1;
     let id = *idx;

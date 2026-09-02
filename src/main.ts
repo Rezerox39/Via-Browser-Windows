@@ -597,20 +597,6 @@ async function boot() {
   $("home").classList.remove("hidden");
   $("home").classList.remove("hidden");
   log("Boot complete, tabs:", tabs.length);
-  
-  // AGGRESSIVE SAFETY NET: force homepage visible, kill any stray webviews
-  // This runs after everything else to guarantee the homepage is shown.
-  setTimeout(() => {
-    hideAllWebviews();
-    $("home").classList.remove("hidden");
-    $("bottom-nav").classList.remove("hidden");
-    log("SAFETY NET: forced homepage visible, all webviews hidden");
-  }, 200);
-  setTimeout(() => {
-    hideAllWebviews();
-    $("home").classList.remove("hidden");
-    $("bottom-nav").classList.remove("hidden");
-  }, 1000);
 }
 
 function setupDraggableNav() {

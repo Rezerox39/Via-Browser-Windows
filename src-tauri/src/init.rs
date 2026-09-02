@@ -269,3 +269,9 @@ pub fn build(s: &Settings) -> String {
         scripts_js = scripts_js,
     )
 }
+
+/// Returns the JavaScript that injects the floating Via navigation bar into
+/// every child webview page. This runs at DOMContentLoaded via on_page_load.
+pub fn nav_inject_js() -> &'static str {
+    include_str!("../nav.js")
+}

@@ -34,10 +34,8 @@ pub struct BrowserState {
 
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// Height of the HTML bottom navigation bar — must match CSS `--nav-h`.
-/// The native webview is positioned at the very top (y=0) with a height that
-/// never includes the bottom bar area, so the nav bar always stays visible.
-pub const NAV_HEIGHT: f64 = 56.0; // must match CSS --nav-h
+/// The floating nav is injected into each child webview's DOM via init::nav_inject_js().
+/// WebViews fill the entire window — no bottom reservation is needed.
 
 /// File extensions that WebView2 hands off to the download engine instead of
 /// rendering. Never let the adblock navigation hook veto these: a "blocked"
@@ -92,16 +90,10 @@ fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
     let scale = wvwin.scale_factor().unwrap_or(1.0);
     let width = physical.width as f64 / scale;
     let height = physical.height as f64 / scale;
-    // In fullscreen the OS bottom nav bar is hidden, so the webview may fill
-    // the whole window. Otherwise it must stop above the HTML bottom bar.
-    let h = if wvwin.is_fullscreen().unwrap_or(false) {
-        height
-    } else {
-        (height - NAV_HEIGHT).max(320.0)
-    };
+    // The floating nav is injected into the webview DOM, so fill the entire window.
     Some(tauri::Rect {
         position: tauri::LogicalPosition::new(0.0, 0.0).into(),
-        size: tauri::LogicalSize::new(width, h).into(),
+        size: tauri::LogicalSize::new(width, height).into(),
     })
 }
 
@@ -280,6 +272,7 @@ pub async fn create_tab(
 
     let nav_settings = s.clone(); // captured by on_navigation (site overrides)
     let dl_label = label.clone();
+    let nav_app = app.clone();
     // auto_resize keeps every child webview filling the window natively on
     // resize (Tauri's runtime re-applies proportional bounds on each window
     // resize); relayout_tabs() then corrects the fixed 60px nav offset.
@@ -377,18 +370,24 @@ pub async fn create_tab(
         .on_page_load(move |wv, payload| {
             let wv_app = wv.app_handle();
             let label = wv.label().to_string();
-            let url = payload.url().to_string();
-            let tabs = wv_app.state::<BrowserState>();
-            let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
-            if let Some(id) = id {
-                if let Some(win) = wv_app.get_webview_window("main") {
-                    let _ = win.emit(
-                        "tab-url",
-                        serde_json::json!({ "id": id, "url": url }),
-                    );
+            // Inject floating Via nav on every page start
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                let _ = wv.eval(crate::init::nav_inject_js());
+            }
+            // Emit URL update when page finishes loading
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                let url = payload.url().to_string();
+                let tabs = wv_app.state::<BrowserState>();
+                let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
+                if let Some(id) = id {
+                    if let Some(win) = wv_app.get_webview_window("main") {
+                        let _ = win.emit(
+                            "tab-url",
+                            serde_json::json!({ "id": id, "url": url }),
+                        );
+                    }
                 }
             }
-            let _ = wv_app;
         })
         .on_document_title_changed(move |wv, title| {
             let wv_app = wv.app_handle();
@@ -412,11 +411,16 @@ pub async fn create_tab(
             }
         })
         .on_navigation(move |url| {
+            // Handle floating nav actions via custom scheme
+            if url.scheme() == "via-action" {
+                let action = url.host_str().unwrap_or("").to_string();
+                println!("[via] NAV-ACTION: {action}");
+                if let Some(win) = nav_app.get_webview_window("main") {
+                    let _ = win.emit("nav-action", action);
+                }
+                return false;
+            }
             println!("[via] NAVIGATING TO: {url}");
-            // Always allow navigation so WebView2 can detect and handle
-            // downloads through the on_download callback. Ad-block filtering
-            // at the navigation level can block download redirects, so we
-            // only filter non-download URLs.
             if is_download_eligible(&url) {
                 println!("[via]   -> download-eligible, allowed");
                 return true;

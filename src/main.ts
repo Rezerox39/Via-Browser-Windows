@@ -51,6 +51,7 @@ let menuOpen = false;
 let menuPage = 0;
 const MENU_PAGE_SIZE = 12;
 let nextTabId = 0;
+let nextLocalId = -1;
 let closedTabs: ClosedTab[] = [];
 
 const $ = (s: string) => document.getElementById(s) as HTMLElement;
@@ -128,23 +129,30 @@ function hideHomePage() {
 }
 
 function createTab(url?: string): Promise<Tab> {
-  nextTabId++;
-  const localId = nextTabId;
-  log("createTab localId=", localId, "url=", url, "tabs before=", tabs.length);
-  return invoke<TabInfo>("create_tab", { url: url || null }).then(info => {
-    const tab: Tab = { id: info.id, url: url || "", title: "New Tab", active: true };
+  // Empty tabs: no child webview needed — just a local model.
+  // This avoids the WebView2 about:blank / Bing issue entirely.
+  if (!url) {
+    const id = nextLocalId--;
+    log("createTab EMPTY id=", id, "tabs before=", tabs.length);
+    const tab: Tab = { id, url: "", title: "New Tab", active: true };
+    tabs.push(tab);
+    activeId = id;
+    showHomePage();
+    updateNavButtons();
+    updateTabCount();
+    return Promise.resolve(tab);
+  }
+  // URL provided: create a real child webview
+  log("createTab url=", url, "tabs before=", tabs.length);
+  return invoke<TabInfo>("create_tab", { url }).then(info => {
+    const tab: Tab = { id: info.id, url, title: "New Tab", active: true };
     tabs.push(tab);
     activeId = info.id;
-    log("created tab", info.id, "tabs after=", tabs.length);
-    if (url) {
-      invoke("navigate_tab", { id: info.id, url }).catch(e => log("navigate_tab failed", e));
-      showOnlyWebview(info.id);
-      hideHomePage();
-      // Add to history
-      invoke("add_history", { url, title: url }).catch(() => {});
-    } else {
-      showHomePage();
-    }
+    log("created webview tab", info.id, "tabs after=", tabs.length);
+    invoke("navigate_tab", { id: info.id, url }).catch(e => log("navigate_tab failed", e));
+    showOnlyWebview(info.id);
+    hideHomePage();
+    invoke("add_history", { url, title: url }).catch(() => {});
     updateNavButtons();
     updateTabCount();
     updateInjectedNavCounts();
@@ -160,11 +168,12 @@ async function closeTab(id: number) {
   log("closeTab", id);
   const tab = tabs.find(t => t.id === id);
   if (tab) {
-    closedTabs.unshift({ url: tab.url || "about:blank", title: tab.title, ts: Date.now() });
+    closedTabs.unshift({ url: tab.url || "", title: tab.title, ts: Date.now() });
     if (closedTabs.length > 50) closedTabs.length = 50;
-    await invoke("push_closed_tab", { url: tab.url || "about:blank", title: tab.title }).catch(() => {});
+    await invoke("push_closed_tab", { url: tab.url || "", title: tab.title }).catch(() => {});
   }
-  await invoke("close_tab", { id }).catch(() => {});
+  // Only close the Rust webview if it exists (positive ID)
+  if (id > 0) await invoke("close_tab", { id }).catch(() => {});
   tabs = tabs.filter(t => t.id !== id);
   if (activeId === id) {
     if (tabs.length) {
@@ -185,13 +194,14 @@ async function switchTab(id: number) {
   const tab = tabs.find(t => t.id === id);
   if (tab) tab.active = true;
   activeId = id;
-  await invoke("select_tab", { id }).catch(e => log("select_tab failed", e));
-  const isEmpty = !tab || !tab.url || tab.url === "about:blank" || tab.url === "";
-  if (isEmpty) {
+  if (id < 0) {
+    // Local-only tab (no webview) — show homepage
     hideAllWebviews();
     $("home").classList.remove("hidden");
     $("bottom-nav").classList.remove("hidden");
   } else {
+    // Real webview tab
+    await invoke("select_tab", { id }).catch(e => log("select_tab failed", e));
     showOnlyWebview(id);
     hideHomePage();
   }
@@ -204,13 +214,21 @@ function updateTabCount() { $("nav-tab-count").textContent = String(tabs.length 
 function updateInjectedNavCounts() {
   const count = String(tabs.length || 1);
   for (const t of tabs) {
-    invoke("eval_tab", { id: t.id, js: `var e=document.getElementById('vn-count');if(e)e.textContent='${count}';` }).catch(() => {});
+    if (t.id > 0) {
+      invoke("eval_tab", { id: t.id, js: `var e=document.getElementById('vn-count');if(e)e.textContent='${count}';` }).catch(() => {});
+    }
   }
 }
 
 function updateNavButtons() {
-  $("nav-back").removeAttribute("disabled");
-  $("nav-fwd").removeAttribute("disabled");
+  if (activeId && activeId < 0) {
+    // Empty tab — disable back/forward
+    $("nav-back").setAttribute("disabled", "disabled");
+    $("nav-fwd").setAttribute("disabled", "disabled");
+  } else {
+    $("nav-back").removeAttribute("disabled");
+    $("nav-fwd").removeAttribute("disabled");
+  }
 }
 
 /* ═══════ SEARCH / NAVIGATION ═══════ */
@@ -230,7 +248,29 @@ function handleSearch() {
 
 async function openUrl(url: string) {
   log("openUrl", url);
-  if (activeId) {
+  if (activeId && activeId < 0) {
+    // Active tab is an empty local-only tab — create a real webview for it
+    const emptyTab = tabs.find(t => t.id === activeId);
+    try {
+      const info = await invoke<TabInfo>("create_tab", { url });
+      // Replace the empty tab with the real webview tab
+      tabs = tabs.filter(t => t.id !== activeId);
+      const newTab: Tab = { id: info.id, url, title: emptyTab?.title || "New Tab", active: true };
+      tabs.push(newTab);
+      activeId = info.id;
+      invoke("navigate_tab", { id: info.id, url }).catch(e => log("navigate_tab failed", e));
+      showOnlyWebview(info.id);
+      hideHomePage();
+      invoke("add_history", { url, title: url }).catch(() => {});
+      updateNavButtons();
+      updateTabCount();
+      updateInjectedNavCounts();
+    } catch (e) {
+      log("openUrl create_tab FAILED", e);
+      showToast("Failed to navigate");
+    }
+  } else if (activeId && activeId > 0) {
+    // Active tab has a real webview — navigate it
     const tab = tabs.find(t => t.id === activeId);
     if (tab) tab.url = url;
     await invoke("navigate_tab", { id: activeId, url }).catch(() => showToast("Nav failed"));
@@ -239,6 +279,7 @@ async function openUrl(url: string) {
     invoke("add_history", { url, title: url }).catch(() => {});
     updateNavButtons();
   } else {
+    // No active tab — create a new one
     await createTab(url);
   }
 }
@@ -419,11 +460,11 @@ function setupEvents() {
     const action = ev.payload;
     log("nav-action received:", action);
     if (action === "home") {
-      // Go back to homepage: close current tab or just show homepage
-      if (activeId) {
+      // Go back to homepage
+      if (activeId && activeId > 0) {
+        // Tab has a webview — navigate it to about:blank and show homepage
         const tab = tabs.find(t => t.id === activeId);
         if (tab) { tab.url = ""; tab.title = "New Tab"; }
-        // Navigate the tab to about:blank
         invoke("navigate_tab", { id: activeId, url: "about:blank" }).catch(() => {});
       }
       showHomePage();
@@ -504,7 +545,9 @@ function setupKeyboard() {
 /* ═══════ SESSION ═══════ */
 function saveSession() {
   if (!restoreTabs || !tabs.length) return;
-  invoke("save_session", { entries: tabs.map((t, i) => ({ url: t.url || "about:blank", title: t.title, active: t.id === activeId, order: i })) }).catch(() => {});
+  // Only save tabs that have real URLs (skip empty local-only tabs)
+  const entries = tabs.filter(t => t.url && t.url !== "about:blank").map((t, i) => ({ url: t.url, title: t.title, active: t.id === activeId, order: i }));
+  invoke("save_session", { entries }).catch(() => {});
 }
 
 /* ═══════ TABS PANEL ═══════ */

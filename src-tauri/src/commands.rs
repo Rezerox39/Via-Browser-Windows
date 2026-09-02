@@ -260,6 +260,13 @@ pub async fn create_tab(
     let window = main_window(&app)?;
     let s = sstate.0.lock().unwrap().clone();
 
+    // SAFEGUARD: refuse to create a webview for about:blank or empty URLs.
+    // Empty tabs should be handled client-side as local-only models.
+    let raw_url = url.as_deref().unwrap_or("");
+    if raw_url.is_empty() || raw_url == "about:blank" {
+        return Err("Empty tabs must not create webviews".into());
+    }
+
     let mut idx = state.next_id.lock().unwrap();
     *idx += 1;
     let id = *idx;

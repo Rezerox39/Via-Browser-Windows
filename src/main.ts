@@ -586,10 +586,12 @@ async function boot() {
   // Draggable nav for homepage
   setupDraggableNav();
 
-  if (restoreTabs) {
-    const session = await invoke<SessionEntry[]>("restore_session").catch(() => []);
-    if (session.length) { for (const e of [...session].sort((a, b) => a.order - b.order)) { if (e.url && e.url !== "about:blank") await createTab(e.url); } const ae = session.find(s => s.active); if (ae) { const t = tabs.find(x => x.url === ae.url); if (t) await switchTab(t.id); } }
-  }
+  // Always clear stale session data from previous builds to prevent
+  // old URLs (like Bing error pages) from being restored on startup.
+  await invoke("clear_session").catch(() => {});
+  // Session restore is intentionally disabled for this build to
+  // guarantee no stale webviews appear on startup. Will re-enable
+  // in a future version with proper session versioning.
   updateTabCount();
   $("home").classList.remove("hidden");
   log("Boot complete, tabs:", tabs.length);

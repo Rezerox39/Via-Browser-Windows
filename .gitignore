@@ -3,3 +3,8 @@ dist/
 src-tauri/target/
 src-tauri/gen/
 *.log
+
+# Build artifacts
+release/*.exe
+release/*.dll
+release/*.zip

@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" href="/via-icon-144.png" />
 </head>
 <body>
-  <!-- Homepage (shown when no tab is active) -->
+  <!-- Homepage (shown briefly before default tab loads) -->
   <div id="home">
     <img id="home-logo" src="/via-logo.svg" alt="Via" draggable="false" />
     <div id="home-search-wrap">
@@ -19,26 +19,7 @@
     </div>
   </div>
 
-  <!-- Floating Bottom Navigation (homepage only; child webviews get injected nav) -->
-  <div id="bottom-nav">
-    <button id="nav-back" title="Back" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
-    </button>
-    <button id="nav-fwd" title="Forward" disabled>
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
-    </button>
-    <button id="nav-home" title="Home">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
-    </button>
-    <button id="nav-tabs" title="Tabs">
-      <span id="nav-tab-count">1</span>
-    </button>
-    <button id="nav-menu" title="Menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-    </button>
-  </div>
-
-  <!-- Side menu (slides from right) -->
+  <!-- Side menu (slides from right) — managed by frontend JS -->
   <div id="menu-backdrop"></div>
   <div id="side-menu">
     <div id="side-menu-grid"></div>
@@ -55,7 +36,7 @@
     </div>
   </div>
 
-  <!-- Full-screen panel for sub-pages -->
+  <!-- Full-screen panel for sub-pages (bookmarks, history, settings, etc.) -->
   <div id="panel-backdrop"></div>
   <div id="panel">
     <div class="ph">
@@ -73,8 +54,6 @@
   <div id="dl-toast"></div>
   <!-- Toast -->
   <div id="toast"></div>
-  <!-- Context menu -->
-  <div id="context-menu" style="display:none"></div>
 
   <script type="module" src="/src/main.ts"></script>
 </body>

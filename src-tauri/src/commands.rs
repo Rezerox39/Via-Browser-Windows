@@ -9,30 +9,46 @@ use crate::adblock;
 use crate::init;
 use crate::settings::{self, Settings};
 
+// ═══════ DIAGNOSTICS ═══════
+pub const DIAG_BUILD: &str = "FUNCTIONAL_DIAGNOSTICS_2026_09_02_A";
 
-const DIAG_BUILD: &str = "BUILD_2026_09_02_DIAG_v3";
+/// Deterministic log path: next to the exe (or Desktop fallback on Windows).
+fn diag_log_path() -> std::path::PathBuf {
+    // Primary: next to the exe
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("via-debug.log");
+        }
+    }
+    // Fallback: Desktop
+    if let Some(desktop) = dirs::desktop_dir() {
+        return desktop.join("via-debug.log");
+    }
+    std::path::PathBuf::from("via-debug.log")
+}
 
-fn diag_log(msg: &str) {
+pub fn diag_log(msg: &str) {
     use std::io::Write;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    let line = format!("[{}] [DIAG] {}\n", ts, msg);
-    // Try to write next to the exe
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let _ = std::fs::OpenOptions::new()
-                .create(true).append(true)
-                .open(dir.join("via-debug.log"))
-                .and_then(|mut f| f.write_all(line.as_bytes()));
-        }
-    }
-    // Also try CWD
+    let line = format!("[{}] [RUST] {}\n", ts, msg);
     let _ = std::fs::OpenOptions::new()
         .create(true).append(true)
-        .open("via-debug.log")
+        .open(diag_log_path())
         .and_then(|mut f| f.write_all(line.as_bytes()));
+}
+
+/// Startup diagnostic: write initial state to log.
+pub fn diag_boot() {
+    diag_log(&format!("BUILD_ID={}", DIAG_BUILD));
+    if let Ok(exe) = std::env::current_exe() {
+        diag_log(&format!("EXE_PATH={}", exe.display()));
+    }
+    diag_log(&format!("LOG_PATH={}", diag_log_path().display()));
+    diag_log(&format!("OS={}", std::env::consts::OS));
+    diag_log(&format!("ARCH={}", std::env::consts::ARCH));
 }
 
 #[derive(Clone, Serialize)]
@@ -42,9 +58,17 @@ pub struct BrowserDiag {
     pub webview_labels: Vec<String>,
     pub active_tab: Option<u32>,
     pub next_id: u32,
+    pub webview_details: Vec<WebViewDetail>,
 }
 
+#[derive(Clone, Serialize)]
+pub struct WebViewDetail {
+    pub label: String,
+    pub webview_exists: bool,
+    pub url: String,
+}
 
+// ═══════ EXISTING TYPES ═══════
 
 #[derive(Clone, Serialize)]
 pub struct SuggestItem {
@@ -63,7 +87,7 @@ pub struct TabInfo {
 
 #[derive(Default)]
 pub struct BrowserState {
-    pub tabs: Mutex<HashMap<u32, String>>, // tab id -> webview label
+    pub tabs: Mutex<HashMap<u32, String>>,
     pub next_id: Mutex<u32>,
     pub active: Mutex<Option<u32>>,
     pub blocked: Mutex<u64>,
@@ -71,13 +95,6 @@ pub struct BrowserState {
 
 pub struct SettingsState(pub Mutex<Settings>);
 
-/// The floating nav is injected into each child webview's DOM via init::nav_inject_js().
-/// WebViews fill the entire window — no bottom reservation is needed.
-
-/// File extensions that WebView2 hands off to the download engine instead of
-/// rendering. Never let the adblock navigation hook veto these: a "blocked"
-/// navigation to a direct file URL silently kills the download before
-/// `on_download` ever sees it.
 const DOWNLOAD_EXTS: &[&str] = &[
     "apk", "xapk", "zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "img",
     "exe", "msi", "msix", "deb", "rpm", "dmg", "pkg", "torrent",
@@ -88,14 +105,8 @@ const DOWNLOAD_EXTS: &[&str] = &[
 ];
 
 fn is_download_eligible(url: &Url) -> bool {
-    if matches!(url.scheme(), "blob" | "data") {
-        return true;
-    }
-    // A URL that is missing a host (e.g. a browser-internal scheme) can never
-    // be an ad target; don't risk blocking a download initiated from one.
-    if url.host_str().is_none() {
-        return true;
-    }
+    if matches!(url.scheme(), "blob" | "data") { return true; }
+    if url.host_str().is_none() { return true; }
     url.path_segments()
         .and_then(|mut segs| segs.next_back())
         .and_then(|seg| {
@@ -111,33 +122,20 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
 
-/// Compute the target bounds for every tab webview in *logical* pixels.
-///
-/// The HTML bottom nav bar is 60 CSS px tall, which is already a logical
-/// unit: on high-DPI Windows the runtime converts logical -> physical via the
-/// window's scale factor, so subtracting 60 here is DPI-correct (no gap, no
-/// overlap). Returns `None` only when the window is transiently unavailable
-/// (e.g. during fullscreen transition or teardown) so resize is skipped.
 fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
     let wvwin = app.get_webview_window("main")?;
     let physical = wvwin.inner_size().ok()?;
-    if physical.width == 0 || physical.height == 0 {
-        return None;
-    }
+    if physical.width == 0 || physical.height == 0 { return None; }
     let scale = wvwin.scale_factor().unwrap_or(1.0);
     let width = physical.width as f64 / scale;
     let height = physical.height as f64 / scale;
-    // The floating nav is injected into the webview DOM, so fill the entire window.
+    // Webview fills the full window — the native overlay floats above it
     Some(tauri::Rect {
         position: tauri::LogicalPosition::new(0.0, 0.0).into(),
         size: tauri::LogicalSize::new(width, height).into(),
     })
 }
 
-/// Reposition/resize every tab webview after the window is resized or its
-/// scale factor changes (incl. fullscreen toggles). Safely no-ops if the
-/// window or a webview is unavailable. Uses the atomic `set_bounds` so a tab
-/// webview can never end up with a stale width/height racing a move.
 pub fn relayout_tabs(app: &tauri::AppHandle) {
     let state = app.state::<BrowserState>();
     let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
@@ -148,7 +146,6 @@ pub fn relayout_tabs(app: &tauri::AppHandle) {
         }
     }
 }
-
 
 // ---------- settings ----------
 
@@ -163,10 +160,7 @@ pub fn set_settings(
     state: tauri::State<'_, SettingsState>,
     settings: Settings,
 ) -> Result<(), String> {
-    {
-        let mut s = state.0.lock().unwrap();
-        *s = settings.clone();
-    }
+    { let mut s = state.0.lock().unwrap(); *s = settings.clone(); }
     persist_settings(&app, &settings);
     Ok(())
 }
@@ -175,9 +169,7 @@ pub fn load_settings(app: &tauri::AppHandle) -> Settings {
     if let Ok(dir) = app.path().app_config_dir() {
         let p = dir.join("via-settings.json");
         if let Ok(data) = std::fs::read_to_string(&p) {
-            if let Ok(s) = serde_json::from_str(&data) {
-                return s;
-            }
+            if let Ok(s) = serde_json::from_str(&data) { return s; }
         }
     }
     Settings::default()
@@ -200,16 +192,14 @@ pub fn user_agent_for(state: tauri::State<'_, SettingsState>, mode: Option<Strin
     settings::resolve_ua(&tmp)
 }
 
-// ---------- adblock ----------
-
 #[tauri::command]
-pub fn block_url(url: String) -> Option<adblock::BlockResult> {
-    adblock::load_default_filters().block(&url)
+pub fn block_url(url: String) -> Result<(), String> {
+    Ok(())
 }
 
 #[tauri::command]
-pub fn get_filters_css(url: String) -> String {
-    adblock::load_default_filters().cosmetic_css(&url)
+pub fn get_filters_css() -> String {
+    adblock::all_cosmetic_rules_json()
 }
 
 #[tauri::command]
@@ -217,41 +207,23 @@ pub fn blocked_total(state: tauri::State<'_, BrowserState>) -> u64 {
     *state.blocked.lock().unwrap()
 }
 
-// ---------- search suggestions ----------
-
 #[tauri::command]
-pub fn search_suggest(query: String, engine: String) -> Result<Vec<SuggestItem>, String> {
-    let url = engine_url(&engine, &query)?;
-    let body = fetch_text(&url)?;
-    Ok(parse_suggest(&body).into_iter().take(10).collect())
+pub async fn search_suggest(input: String) -> Vec<SuggestItem> {
+    let url = Url::parse(&format!("https://suggestqueries.google.com/complete/search?client=firefox&q={}", urlencoding(&input))).unwrap();
+    match fetch_text(&url) {
+        Ok(body) => parse_suggest_json(&body),
+        Err(_) => vec![],
+    }
 }
 
-fn engine_url(engine: &str, query: &str) -> Result<Url, String> {
-    let q = urlencoding(query.trim());
-    let template = match engine {
-        "DuckDuckGo" => "https://duckduckgo.com/ac/?q={q}&type=list",
-        "Baidu" => "https://suggestion.baidu.com/su?wd={q}",
-        _ => "https://suggestqueries.google.com/complete/search?client=firefox&q={q}",
-    };
-    Url::parse(&template.replace("{q}", &q)).map_err(|e| e.to_string())
-}
-
-fn parse_suggest(body: &str) -> Vec<SuggestItem> {
+fn parse_suggest_json(body: &str) -> Vec<SuggestItem> {
     let mut items = Vec::new();
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-        return items;
-    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else { return items; };
     if let Some(arr) = v.as_array() {
         if let Some(sugs) = arr.get(1).and_then(|x| x.as_array()) {
             for s in sugs {
                 if let Some(s) = s.as_str() {
                     items.push(SuggestItem { label: s.to_string(), url: s.to_string() });
-                }
-            }
-        } else {
-            for s in arr {
-                if let Some(phrase) = s.get("phrase").and_then(|p| p.as_str()) {
-                    items.push(SuggestItem { label: phrase.to_string(), url: phrase.to_string() });
                 }
             }
         }
@@ -274,14 +246,10 @@ fn urlencoding(s: &str) -> String {
 fn fetch_text(url: &Url) -> Result<String, String> {
     let curl = if cfg!(target_os = "windows") { "curl.exe" } else { "curl" };
     let out = std::process::Command::new(curl)
-        .arg("-s")
-        .arg("--max-time")
-        .arg("8")
-        .arg("-A")
-        .arg("ViaBrowser/7.2.1")
+        .arg("-s").arg("--max-time").arg("8")
+        .arg("-A").arg("ViaBrowser/7.2.1")
         .arg(url.as_str())
-        .output()
-        .map_err(|e| e.to_string())?;
+        .output().map_err(|e| e.to_string())?;
     String::from_utf8(out.stdout).map_err(|e| e.to_string())
 }
 
@@ -294,102 +262,88 @@ pub async fn create_tab(
     sstate: tauri::State<'_, SettingsState>,
     url: Option<String>,
 ) -> Result<TabInfo, String> {
-    let window = main_window(&app)?;
+    diag_log("========================================");
+    diag_log("[TAB_CREATE] BEGIN");
+    diag_log(&format!("[TAB_CREATE] requested_url={:?}", url));
+    diag_log(&format!("[TAB_CREATE] thread={:?}", std::thread::current().id()));
+
+    let window = match main_window(&app) {
+        Ok(w) => { diag_log("[TAB_CREATE] main_window=OK"); w }
+        Err(e) => { diag_log(&format!("[TAB_CREATE] main_window=ERROR: {}", e)); return Err(e); }
+    };
+
     let s = sstate.0.lock().unwrap().clone();
-    diag_log(&format!("create_tab START url={:?}", url));
     {
         let tabs = state.tabs.lock().unwrap();
         let active = state.active.lock().unwrap();
-        diag_log(&format!("create_tab STATE tabs={}, active={:?}, next_id={}", tabs.len(), *active, *state.next_id.lock().unwrap()));
+        let next = *state.next_id.lock().unwrap();
+        diag_log(&format!("[TAB_CREATE] existing_native_tabs={}, active={:?}, next_id={}", tabs.len(), *active, next));
+        diag_log(&format!("[TAB_CREATE] existing_labels={:?}", tabs.values().collect::<Vec<_>>()));
     }
+
     let mut idx = state.next_id.lock().unwrap();
     *idx += 1;
     let id = *idx;
     let label = format!("tab-{id}");
-    // Tabs start at about:blank. The local HTML homepage is shown until the
-    // user types a query/URL — we never auto-navigate to an external site.
-    let target = url.unwrap_or_else(|| "about:blank".to_string());
-    let parsed = Url::parse(&normalize_url(&target)).map_err(|e| e.to_string())?;
-    let bounds = tab_bounds(&app).ok_or_else(|| "window unavailable".to_string())?;
+    diag_log(&format!("[TAB_CREATE] generated_tab_id={}", id));
+    diag_log(&format!("[TAB_CREATE] label={}", label));
 
-    let nav_settings = s.clone(); // captured by on_navigation (site overrides)
+    let target = url.unwrap_or_else(|| "newtab".to_string());
+    diag_log(&format!("[TAB_CREATE] target_url={}", target));
+
+    let is_newtab = target == "newtab";
+    let webview_url = if is_newtab {
+        diag_log("[TAB_CREATE] using App URL for newtab page");
+        tauri::WebviewUrl::App("newtab.html".into())
+    } else {
+        match Url::parse(&normalize_url(&target)) {
+            Ok(u) => { diag_log(&format!("[TAB_CREATE] url_parsed=OK normalized={}", u)); tauri::WebviewUrl::External(u) }
+            Err(e) => { diag_log(&format!("[TAB_CREATE] url_parsed=ERROR: {}", e)); return Err(e.to_string()); }
+        }
+    };
+
+    let bounds = match tab_bounds(&app) {
+        Some(b) => { diag_log(&format!("[TAB_CREATE] bounds={:?}", b)); b }
+        None => { diag_log("[TAB_CREATE] bounds=ERROR: window unavailable"); return Err("window unavailable".to_string()); }
+    };
+
+    let nav_settings = s.clone();
     let dl_label = label.clone();
     let nav_app = app.clone();
-    // auto_resize keeps every child webview filling the window natively on
-    // resize (Tauri's runtime re-applies proportional bounds on each window
-    // resize); relayout_tabs() then corrects the fixed 60px nav offset.
-    let mut builder = WebviewBuilder::new(label.clone(), tauri::WebviewUrl::External(parsed.clone()))
+
+    let mut builder = WebviewBuilder::new(label.clone(), webview_url)
         .auto_resize()
         .initialization_script(init::build(&s))
         .on_download(move |wv, event| {
             let wv_app = wv.app_handle();
             let win = wv_app.get_webview_window("main");
-            let id = wv_app
-                .state::<BrowserState>()
-                .tabs
-                .lock()
-                .unwrap()
-                .iter()
-                .find_map(|(i, l)| if *l == dl_label { Some(*i) } else { None });
+            let id = wv_app.state::<BrowserState>().tabs.lock().unwrap()
+                .iter().find_map(|(i, l)| if *l == dl_label { Some(*i) } else { None });
             match event {
                 DownloadEvent::Requested { url, destination } => {
-                    println!("[via] DOWNLOAD REQUESTED: {:?}", url.to_string());
-                    // Prefer the OS Downloads folder; never leave `destination`
-                    // unset — wry only forwards a valid absolute path when we
-                    // assign one here, otherwise the transfer is silently dropped.
-                    let dir = wv_app
-                        .path()
-                        .download_dir()
-                        .unwrap_or_else(|_| std::env::temp_dir());
+                    let dir = wv_app.path().download_dir().unwrap_or_else(|_| std::env::temp_dir());
                     let _ = std::fs::create_dir_all(&dir);
-                    // Decode the REAL filename. WebView2 reports the download URL
-                    // AFTER redirects (e.g. GitHub -> codeload / AWS S3 bucket),
-                    // so the path segment often becomes a UUID hash or the real
-                    // name only exists in the HTTP Content-Disposition header.
-                    // Priority:
-                    //   1. Content-Disposition header from the actual response
-                    //      (the true source of truth, guarantees extension)
-                    //   2. response-content-disposition / filename= query params
-                    //   3. URL path segment (direct file URLs)
-                    //   4. fallback to a timestamped name
-                    // Skip blocking probe_download_filename — it freezes the WebView2
-                    // callback thread. Use URL-based real_filename (non-blocking) instead.
-                    let fname = real_filename(&url)
-                        .unwrap_or_else(|| {
-                            let ts = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            format!("download-{ts}.zip")
-                        });
+                    let fname = real_filename(&url).unwrap_or_else(|| {
+                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                        format!("download-{ts}.zip")
+                    });
                     let dest = dir.join(&fname);
-                    // If a file with that name exists, avoid clobbering.
                     let dest = if dest.exists() {
                         let stem = dest.file_stem().and_then(|f| f.to_str()).unwrap_or("download");
                         let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
                         let mut n = 1;
                         let mut candidate = dir.join(format!("{stem} ({n}).{ext}"));
-                        while candidate.exists() && n < 1000 {
-                            n += 1;
-                            candidate = dir.join(format!("{stem} ({n}).{ext}"));
-                        }
+                        while candidate.exists() && n < 1000 { n += 1; candidate = dir.join(format!("{stem} ({n}).{ext}")); }
                         candidate
-                    } else {
-                        dest
-                    };
+                    } else { dest };
                     *destination = dest.clone();
-                    println!("[via]   -> authorizing download to {}", dest.display());
                     if let Some(win) = &win {
                         let _ = win.emit("download-started", serde_json::json!({
                             "id": id, "url": url.to_string(), "path": dest.to_string_lossy(),
                         }));
-                        let _ = win.emit("download-progress", serde_json::json!({
-                            "id": id, "url": url.to_string(), "path": dest.to_string_lossy(), "received": 0, "total": 0, "done": false,
-                        }));
                     }
                 }
                 DownloadEvent::Finished { url, path, success } => {
-                    println!("[via] DOWNLOAD FINISHED: {:?} success={}", url.to_string(), success);
                     if success {
                         if let Some(p) = &path {
                             let store = wv_app.state::<crate::features::StoreState>();
@@ -406,27 +360,23 @@ pub async fn create_tab(
                 }
                 _ => {}
             }
-            // Let the download proceed.
             true
         })
         .on_page_load(move |wv, payload| {
             let wv_app = wv.app_handle();
             let label = wv.label().to_string();
-            // Inject floating Via nav on every page start
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                let _ = wv.eval(crate::init::nav_inject_js());
+                diag_log(&format!("[NAVIGATION] PAGE_LOAD_STARTED label={} url={}", label, payload.url()));
+                // Navigation overlay is now native — no JS injection needed
             }
-            // Emit URL update when page finishes loading
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let url = payload.url().to_string();
+                diag_log(&format!("[TAB-LIFECYCLE] NAVIGATION_FINISHED label={} url={}", label, url));
                 let tabs = wv_app.state::<BrowserState>();
                 let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
                 if let Some(id) = id {
                     if let Some(win) = wv_app.get_webview_window("main") {
-                        let _ = win.emit(
-                            "tab-url",
-                            serde_json::json!({ "id": id, "url": url }),
-                        );
+                        let _ = win.emit("tab-url", serde_json::json!({ "id": id, "url": url }));
                     }
                 }
             }
@@ -438,13 +388,9 @@ pub async fn create_tab(
             let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
             if let Some(id) = id {
                 if let Some(win) = wv_app.get_webview_window("main") {
-                    // Secure page->host bridge: "VIA:" + URI-encoded JSON [action, data].
                     if let Some(rest) = title.strip_prefix("VIA:") {
                         if let Some(decoded) = percent_decode(rest) {
-                            let _ = win.emit(
-                                "via-msg",
-                                serde_json::json!({ "id": id, "msg": decoded }),
-                            );
+                            let _ = win.emit("via-msg", serde_json::json!({ "id": id, "msg": decoded }));
                         }
                         return;
                     }
@@ -453,20 +399,16 @@ pub async fn create_tab(
             }
         })
         .on_navigation(move |url| {
-            // Handle floating nav actions via custom scheme
             if url.scheme() == "via-action" {
                 let action = url.host_str().unwrap_or("").to_string();
-                println!("[via] NAV-ACTION: {action}");
+                diag_log(&format!("[NAVIGATION] VIA_ACTION action={}", action));
                 if let Some(win) = nav_app.get_webview_window("main") {
                     let _ = win.emit("nav-action", action);
                 }
                 return false;
             }
-            println!("[via] NAVIGATING TO: {url}");
-            if is_download_eligible(&url) {
-                println!("[via]   -> download-eligible, allowed");
-                return true;
-            }
+            diag_log(&format!("[TAB-LIFECYCLE] ON_NAVIGATION url={}", url));
+            if is_download_eligible(&url) { return true; }
             let host = url.host_str().unwrap_or("").to_lowercase();
             let mut adblock = nav_settings.adblock_enabled;
             for site in &nav_settings.sites {
@@ -476,35 +418,24 @@ pub async fn create_tab(
                 }
             }
             if adblock && adblock::load_default_filters().block(url.as_str()).is_some() {
-                println!("[via]   -> blocked by adblock");
+                diag_log(&format!("[NAVIGATION] BLOCKED_BY_ADBLOCK url={}", url));
                 return false;
             }
             true
         })
         .on_new_window(move |url, _features| {
-            // Websites open download links (and many pages) with
-            // `target="_blank"`. WebView2 turns that into a new-window request.
-            // Letting WebView2 read the HTTP headers is the CORRECT way to tell
-            // a real download (Content-Disposition: attachment) from a page:
-            // no extension guessing. So we navigate the ACTIVE tab here and deny
-            // the native OS window. If it's a file, WebView2 cancels the visual
-            // navigation and fires on_download (which saves + emits progress).
-            // If it's a real page, it just loads in the active tab.
             let active = app.state::<BrowserState>().active.lock().unwrap().clone();
-            let label = active
-                .and_then(|id| app.state::<BrowserState>().tabs.lock().unwrap().get(&id).cloned());
+            let label = active.and_then(|id| app.state::<BrowserState>().tabs.lock().unwrap().get(&id).cloned());
             let nav_url = url.clone();
+            diag_log(&format!("[NAVIGATION] NEW_WINDOW url={}", nav_url));
             match label {
                 Some(label) => {
                     if let Some(wv) = app.get_webview(&label) {
-                        println!("[via] target=_blank -> active tab: {nav_url}");
                         let _ = wv.navigate(nav_url);
                     }
                 }
                 None => {
-                    // No active tab yet: surface to the frontend, which creates one.
-                    let _ = app
-                        .get_webview_window("main")
+                    let _ = app.get_webview_window("main")
                         .map(|win| win.emit("new-window-request", serde_json::json!({ "url": nav_url.to_string() })));
                 }
             }
@@ -515,20 +446,27 @@ pub async fn create_tab(
         builder = builder.user_agent(&ua);
     }
 
-    let webview = window
-        .add_child(builder, bounds.position, bounds.size)
-        .map_err(|e| e.to_string())?;
-    // Start hidden: the pure-black local homepage is shown until the user
-    // navigates somewhere (the frontend calls show_tab on navigation).
-    diag_log(&format!("create_tab WebView CREATED id={} label={}", id, label));
+    diag_log("[TAB_CREATE] before_add_child (posts to main thread)");
+    let webview = match window.add_child(builder, bounds.position, bounds.size) {
+        Ok(wv) => { diag_log("[TAB_CREATE] add_child=SUCCESS"); wv }
+        Err(e) => { diag_log(&format!("[TAB_CREATE] add_child=ERROR: {}", e)); return Err(e.to_string()); }
+    };
+
+    diag_log(&format!("[TAB-LIFECYCLE] CREATED id={} label={}", id, webview.label()));
     webview.hide().ok();
+    diag_log(&format!("[TAB-LIFECYCLE] ATTACHED id={} label={}", id, label));
 
     {
         let mut tabs = state.tabs.lock().unwrap();
         tabs.insert(id, label.clone());
     }
     *state.active.lock().unwrap() = Some(id);
-    diag_log(&format!("create_tab DONE id={} tabs_after={}", id, state.tabs.lock().unwrap().len()));
+
+    let final_count = state.tabs.lock().unwrap().len();
+    let final_active = *state.active.lock().unwrap();
+    diag_log(&format!("[TAB-LIFECYCLE] ACTIVATED id={} native_tab_count={}", id, final_count));
+    diag_log("[TAB_CREATE] END");
+    diag_log("========================================");
 
     Ok(TabInfo {
         id,
@@ -539,7 +477,6 @@ pub async fn create_tab(
     })
 }
 
-
 #[tauri::command]
 pub fn get_browser_state(
     app: tauri::AppHandle,
@@ -549,21 +486,33 @@ pub fn get_browser_state(
     let active = state.active.lock().unwrap();
     let next = *state.next_id.lock().unwrap();
     let labels: Vec<String> = tabs.values().cloned().collect();
-    let webview_count = labels.iter()
-        .filter(|l| app.get_webview(l).is_some())
-        .count();
-    let diag = BrowserDiag {
+
+    let mut details = Vec::new();
+    for (id, label) in tabs.iter() {
+        let wv_exists = app.get_webview(label).is_some();
+        let url = if wv_exists {
+            app.get_webview(label).and_then(|wv| wv.url().ok()).map(|u| u.to_string()).unwrap_or_default()
+        } else { String::new() };
+        details.push(WebViewDetail {
+            label: label.clone(),
+            webview_exists: wv_exists,
+            url,
+        });
+    }
+
+    diag_log(&format!("[STATE_QUERY] native_tabs={} active={:?} next_id={} labels={:?}", tabs.len(), *active, next, labels));
+    for d in &details {
+        diag_log(&format!("[STATE_QUERY]   tab_label={} webview_exists={} url={}", d.label, d.webview_exists, d.url));
+    }
+
+    BrowserDiag {
         build: DIAG_BUILD.to_string(),
         tab_count: tabs.len(),
-        webview_labels: labels.clone(),
+        webview_labels: labels,
         active_tab: *active,
         next_id: next,
-    };
-    diag_log(&format!(
-        "STATE: tabs={}, real_webviews={}, active={:?}, next_id={}, labels={:?}",
-        tabs.len(), webview_count, *active, next, labels
-    ));
-    diag
+        webview_details: details,
+    }
 }
 
 #[tauri::command]
@@ -572,19 +521,28 @@ pub fn close_tab(
     state: tauri::State<'_, BrowserState>,
     id: u32,
 ) -> Result<(), String> {
-    diag_log(&format!("close_tab id={}", id));
+    diag_log(&format!("[CLOSE_TAB] BEGIN id={}", id));
     let label = state.tabs.lock().unwrap().remove(&id);
     if let Some(label) = label {
+        diag_log(&format!("[CLOSE_TAB] found_label={}", label));
         if let Some(wv) = app.get_webview(&label) {
             if app.state::<SettingsState>().0.lock().unwrap().clear_on_exit {
                 let _ = wv.clear_all_browsing_data();
             }
             let _ = wv.close();
+            diag_log("[CLOSE_TAB] webview.closed()");
+        } else {
+            diag_log("[CLOSE_TAB] webview_NOT_FOUND");
         }
+    } else {
+        diag_log("[CLOSE_TAB] label_NOT_FOUND");
     }
     if *state.active.lock().unwrap() == Some(id) {
         *state.active.lock().unwrap() = None;
+        diag_log("[CLOSE_TAB] cleared_active");
     }
+    let final_count = state.tabs.lock().unwrap().len();
+    diag_log(&format!("[CLOSE_TAB] END remaining_tabs={}", final_count));
     Ok(())
 }
 
@@ -595,14 +553,28 @@ pub fn navigate_tab(
     id: u32,
     url: String,
 ) -> Result<(), String> {
-    diag_log(&format!("navigate_tab id={} url={}", id, url));
+    diag_log(&format!("[NAVIGATE_TAB] BEGIN id={} url={}", id, url));
     let label = state.tabs.lock().unwrap().get(&id).cloned();
-    if let Some(label) = label {
-        if let Some(wv) = app.get_webview(&label) {
+    match &label {
+        Some(l) => diag_log(&format!("[NAVIGATE_TAB] label={}", l)),
+        None => { diag_log("[NAVIGATE_TAB] label_NOT_FOUND"); return Err("tab not found".into()); }
+    }
+    let label = label.unwrap();
+    match app.get_webview(&label) {
+        Some(wv) => {
             let parsed = Url::parse(&normalize_url(&url)).map_err(|e| e.to_string())?;
-            wv.navigate(parsed).map_err(|e| e.to_string())?;
+            diag_log(&format!("[NAVIGATE_TAB] calling_wv.navigate url={}", parsed));
+            match wv.navigate(parsed) {
+                Ok(()) => diag_log("[NAVIGATE_TAB] wv.navigate=SUCCESS"),
+                Err(e) => { diag_log(&format!("[NAVIGATE_TAB] wv.navigate=ERROR: {}", e)); return Err(e.to_string()); }
+            }
+        }
+        None => {
+            diag_log("[NAVIGATE_TAB] webview_NOT_FOUND");
+            return Err("webview not found".into());
         }
     }
+    diag_log("[NAVIGATE_TAB] END");
     Ok(())
 }
 
@@ -612,18 +584,22 @@ pub fn select_tab(
     state: tauri::State<'_, BrowserState>,
     id: u32,
 ) -> Result<TabInfo, String> {
-    diag_log(&format!("select_tab id={}", id));
+    diag_log(&format!("[SELECT_TAB] BEGIN id={}", id));
     let label = state.tabs.lock().unwrap().get(&id).cloned();
-    if let Some(label) = label {
-        if let Some(wv) = app.get_webview(&label) {
-            // Restore bounds before showing (in case it was moved off-screen)
+    match &label {
+        Some(l) => diag_log(&format!("[SELECT_TAB] label={}", l)),
+        None => { diag_log("[SELECT_TAB] label_NOT_FOUND"); return Err("tab not found".into()); }
+    }
+    let label = label.unwrap();
+    match app.get_webview(&label) {
+        Some(wv) => {
             if let Some(bounds) = tab_bounds(&app) {
                 let _ = wv.set_bounds(bounds);
             }
             let _ = wv.show();
             let _ = wv.set_focus();
             let url = wv.url().map(|u| u.to_string()).unwrap_or_default();
-            // Hide other tabs by moving them off-screen
+            diag_log(&format!("[SELECT_TAB] webview.show+focus url={}", url));
             for (_, other) in state.tabs.lock().unwrap().iter() {
                 if other != &label {
                     if let Some(o) = app.get_webview(other) {
@@ -636,18 +612,22 @@ pub fn select_tab(
                 }
             }
             *state.active.lock().unwrap() = Some(id);
+            crate::shell::ensure_overlay_above(&app);
+            diag_log(&format!("[SELECT_TAB] END active={}", id));
             return Ok(TabInfo { id, url, title: String::new(), loading: false, active: true });
         }
+        None => {
+            diag_log("[SELECT_TAB] webview_NOT_FOUND");
+            return Err("webview not found".into());
+        }
     }
-    Err("tab not found".into())
 }
 
 #[tauri::command]
 pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
-    let label = format!("tab-{id}");
+    let label = format!("tab-{}", id);
     if let Some(wv) = app.get_webview(&label) {
         let _ = wv.hide();
-        // Move off-screen as fallback in case hide() doesn't work on Windows
         let _ = wv.set_bounds(tauri::Rect {
             position: tauri::LogicalPosition::new(-99999.0, -99999.0).into(),
             size: tauri::LogicalSize::new(1.0, 1.0).into(),
@@ -658,14 +638,19 @@ pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
 
 #[tauri::command]
 pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
-    let label = format!("tab-{id}");
+    let label = format!("tab-{}", id);
+    diag_log(&format!("[SHOW_TAB] id={} label={}", id, label));
     if let Some(wv) = app.get_webview(&label) {
-        // Restore bounds first (in case hide_tab moved it off-screen)
         if let Some(bounds) = tab_bounds(&app) {
             let _ = wv.set_bounds(bounds);
         }
         let _ = wv.show();
         let _ = wv.set_focus();
+        diag_log(&format!("[TAB-LIFECYCLE] VISIBLE id={}", id));
+        // Ensure the navigation overlay stays above this webview
+        crate::shell::ensure_overlay_above(&app);
+    } else {
+        diag_log("[SHOW_TAB] webview_NOT_FOUND");
     }
     Ok(())
 }
@@ -718,9 +703,7 @@ pub fn list_tabs(state: tauri::State<'_, BrowserState>) -> Vec<TabInfo> {
 pub fn clear_data(app: tauri::AppHandle, state: tauri::State<'_, BrowserState>) -> Result<(), String> {
     let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
     for l in labels {
-        if let Some(wv) = app.get_webview(&l) {
-            let _ = wv.clear_all_browsing_data();
-        }
+        if let Some(wv) = app.get_webview(&l) { let _ = wv.clear_all_browsing_data(); }
     }
     Ok(())
 }
@@ -733,176 +716,119 @@ pub fn set_night_mode(
 ) -> Result<(), String> {
     let labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
     let js = if enabled {
-        r#"var s=document.createElement('style');s.id='via-night';s.textContent='html{filter:invert(1) hue-rotate(180deg) brightness(.92) contrast(.9)}img,video,canvas,iframe,svg,[style*="background-image"]{filter:invert(1) hue-rotate(180deg)}';document.documentElement.appendChild(s);"#
+        "document.documentElement.classList.add('night-mode')"
     } else {
-        r#"var s=document.getElementById('via-night');if(s)s.remove();"#
+        "document.documentElement.classList.remove('night-mode')"
     };
     for l in labels {
-        if let Some(wv) = app.get_webview(&l) {
-            let _ = wv.eval(js.to_string());
-        }
+        if let Some(wv) = app.get_webview(&l) { let _ = wv.eval(js); }
     }
     Ok(())
 }
 
+#[tauri::command]
+pub fn navigate_to_newtab(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+    id: u32,
+) -> Result<(), String> {
+    diag_log(&format!("[NAVIGATE_NEWTAB] id={}", id));
+    let label = state.tabs.lock().unwrap().get(&id).cloned();
+    match &label {
+        Some(l) => {
+            if let Some(wv) = app.get_webview(l) {
+                // Use eval to navigate to the newtab page via the app protocol
+                let js = "window.location.href = 'newtab.html';";
+                match wv.eval(js) {
+                    Ok(()) => { diag_log("[NAVIGATE_NEWTAB] OK"); Ok(()) }
+                    Err(e) => { diag_log(&format!("[NAVIGATE_NEWTAB] ERROR: {}", e)); Err(e.to_string()) }
+                }
+            } else {
+                diag_log("[NAVIGATE_NEWTAB] webview not found");
+                Err("webview not found".into())
+            }
+        }
+        None => { diag_log("[NAVIGATE_NEWTAB] tab not found"); Err("tab not found".into()) }
+    }
+}
+
+#[tauri::command]
+pub fn get_active_tab_info(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+) -> Option<TabInfo> {
+    let active = match *state.active.lock().unwrap() {
+        Some(id) => id,
+        None => return None,
+    };
+    let label = state.tabs.lock().unwrap().get(&active).cloned()?;
+    let wv = app.get_webview(&label)?;
+    let url = wv.url().map(|u| u.to_string()).unwrap_or_default();
+    Some(TabInfo { id: active, url, title: String::new(), loading: false, active: true })
+}
+
+#[tauri::command]
+pub fn on_nav_click(
+    app: tauri::AppHandle,
+    action: String,
+) -> Result<(), String> {
+    match action.as_str() {
+        "back" => crate::shell::nav_back(&app),
+        "forward" => crate::shell::nav_forward(&app),
+        "home" => crate::shell::nav_home(&app),
+        "tabs" => crate::shell::nav_tabs(&app),
+        "menu" => crate::shell::nav_menu(&app),
+        _ => { diag_log(&format!("[NAV] unknown action: {}", action)); Ok(()) }
+    }
+}
+
+#[tauri::command]
+pub fn on_nav_drag(
+    app: tauri::AppHandle,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
+    let state = app.state::<crate::shell::ShellState>();
+    let overlay = state.overlay.lock().unwrap();
+    if let Some(ref ov) = *overlay {
+        crate::shell::move_overlay(&app, ov.x + dx, ov.y + dy)
+    } else {
+        Err("overlay not found".into())
+    }
+}
+
+// ---------- URL normalization ----------
+
+
+
 pub fn normalize_url(input: &str) -> String {
     let t = input.trim();
-    if t.is_empty() || t == "about:blank" {
-        return "about:blank".to_string();
-    }
-    // Allow about:, data:, javascript: schemes through untouched
-    if t.starts_with("about:") || t.starts_with("data:") || t.starts_with("javascript:") {
-        return t.to_string();
-    }
-    if t.starts_with("http://") || t.starts_with("https://") {
-        return t.to_string();
-    }
-    // IP literals and localhost
+    if t.is_empty() || t == "about:blank" { return "about:blank".to_string(); }
+    if t.starts_with("about:") || t.starts_with("data:") || t.starts_with("javascript:") { return t.to_string(); }
+    if t.starts_with("http://") || t.starts_with("https://") { return t.to_string(); }
     if t.starts_with("localhost") || is_ip_literal(t) {
-        if t.contains("://") { return t.to_string(); }
-        return format!("http://{t}");
+        return if t.contains("://") { t.to_string() } else { format!("http://{t}") };
     }
-    // domain-like: contains a dot, no spaces
     if t.contains('.') && !t.contains(' ') && !t.starts_with('/') && looks_like_host(t) {
         return format!("https://{t}");
     }
-    // Otherwise: search query
     let q = urlencoding(t);
     format!("https://www.google.com/search?q={q}")
 }
 
-/// Minimal percent-decoder ("%XX" -> byte), returning None on malformed input.
-/// Extract the real filename for a download from a (possibly redirect-mangled)
-/// download URL. GitHub-style CDN URLs carry the true name in query params:
-///   response-content-disposition=attachment%3B%20filename%3D%22zmt.apk%22
-///   (or filename*=UTF-8''zmt.apk)
-/// Falls back to path segment, then common query keys. Returns None if nothing
-/// usable is found (e.g. a naked UUID hash without an extension).
-/// Probe the download URL's HTTP response and return the filename from the
-/// Content-Disposition header. This is the authoritative source for the real
-/// name + extension (e.g. GitHub -> codeload returns
-/// `attachment; filename=git-2.50.0.tar.gz` when the URL has no extension).
-/// Fails gracefully (returns None) so the caller falls back to URL parsing.
-fn probe_download_filename(url: &Url) -> Option<String> {
-    if !matches!(url.scheme(), "http" | "https") {
-        return None;
-    }
-    let client = reqwest::blocking::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("ViaBrowser/7.2.1")
-        .build()
-        .ok()?;
-    // HEAD first; fall back to GET if HEAD is refused (405/403) or the
-    // response has no useful Content-Disposition.
-    let mut resp = client.head(url.as_str()).send().ok()?;
-    let mut header = resp
-        .headers()
-        .get("content-disposition")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim().to_string())
-        .unwrap_or_default();
-    if !resp.status().is_success() || header.is_empty() {
-        if let Ok(get_resp) = client.get(url.as_str()).send() {
-            resp = get_resp;
-            header = resp
-                .headers()
-                .get("content-disposition")
-                .and_then(|v| v.to_str().ok())
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-        }
-    }
-    parse_content_disposition(&header)
+fn is_ip_literal(s: &str) -> bool {
+    let host = s.trim_start_matches("http://").trim_start_matches("https://");
+    let host = host.split('/').next().unwrap_or(host);
+    host.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) && host.split('.').count() == 4
 }
 
-/// Parse a Content-Disposition header value into its filename, supporting both
-/// `filename="x.zip"` and RFC 5987 `filename*=UTF-8''x.zip`.
-fn parse_content_disposition(header: &str) -> Option<String> {
-    // filename*=UTF-8''...
-    if let Some(star) = header.find("filename*=") {
-        let after = &header[star + "filename*=".len()..];
-        if let Some(eq) = after.find("''") {
-            let cand = after[eq + 2..].trim_matches('"').trim();
-            if let Some(d) = percent_decode(cand) {
-                let d = d.trim().to_string();
-                if !d.is_empty() && d.len() < 256 { return Some(d); }
-            }
-        }
-    }
-    // filename="x" or filename=x (single token up to ';')
-    if let Some(pos) = header.find("filename=") {
-        let tail = &header[pos + "filename=".len()..];
-        let mut cand = tail.trim().to_string();
-        if cand.starts_with('"') {
-            cand = cand[1..].to_string();
-            cand = cand.split('"').next().unwrap_or("").into();
-        } else {
-            cand = cand.split(';').next().unwrap_or("").trim().into();
-        }
-        if let Some(d) = percent_decode(cand.trim_matches('"').trim()) {
-            let d = d.trim().to_string();
-            if !d.is_empty() && d.len() < 256 { return Some(d); }
-        }
-    }
-    None
-}
-
-fn real_filename(url: &Url) -> Option<String> {
-    // 1) Content-Disposition query param (AWS S3 / GitHub / Google Drive style).
-    for (k, v) in url.query_pairs() {
-        let key = k.as_ref().to_ascii_lowercase();
-        if key == "response-content-disposition" || key == "content-disposition" {
-            let disp = v.as_ref();
-            // filename*=UTF-8''name
-            if let Some(star) = disp.find("filename*=") {
-                let after = &disp[star + "filename*=".len()..];
-                if let Some(eq) = after.find("''") {
-                    let cand = after[eq + 2..].trim_matches('"').trim();
-                    if let Some(d) = percent_decode(cand) {
-                        let d = d.trim().to_string();
-                        if !d.is_empty() && d.len() < 256 { return Some(d); }
-                    }
-                }
-            }
-            // filename="x" or filename=x
-            if let Some(pos) = disp.find("filename=") {
-                let mut cand = disp[pos + "filename=".len()..].trim().to_string();
-                if cand.starts_with('"') { cand = cand[1..].to_string(); }
-                cand = cand.split('"').next().unwrap_or("").to_string();
-                if cand.is_empty() {
-                    // no quotes: take up to ';'
-                    cand = disp[pos + "filename=".len()..].split(';').next().unwrap_or("").trim().to_string();
-                }
-                if let Some(d) = percent_decode(cand.trim_matches('"')) {
-                    let d = d.trim().to_string();
-                    if !d.is_empty() && d.len() < 256 { return Some(d); }
-                }
-            }
-        }
-        // 2) Direct query keys that hold the filename.
-        if matches!(key.as_str(), "filename" | "file" | "name" | "download" | "x-amz-meta-filename") {
-            let cand = v.as_ref().trim().trim_matches('"').to_string();
-            if let Some(d) = percent_decode(&cand) {
-                let d = d.trim().to_string();
-                if !d.is_empty() && d.len() < 256 { return Some(d); }
-            }
-        }
-    }
-    // 3) Path segment (normal case: https://.../releases/download/v1.2/zmt.apk).
-    let path_name = url
-        .path_segments()
-        .and_then(|segs| segs.last())
-        .filter(|f| !f.is_empty())
-        .and_then(|f| percent_decode(f))
-        .filter(|f| !f.is_empty() && f.len() < 128);
-    if let Some(p) = path_name {
-        // A 32-char hex/UUID-ish segment is almost certainly an AWS/redirect
-        // hash, not a real filename. Reject it unless it has an extension.
-        let has_ext = p.contains('.');
-        let looks_hash = p.len() >= 22 && p.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
-        if has_ext || !looks_hash { return Some(p); }
-    }
-    None
+fn looks_like_host(s: &str) -> bool {
+    let host = s.split(['/', ':']).next().unwrap_or(s);
+    let mut parts = host.split('.');
+    let domain = parts.next_back().unwrap_or("");
+    let has_tld = domain.len() >= 2 && domain.chars().all(|c| c.is_ascii_alphabetic());
+    let labels_ok = host.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+    has_tld && labels_ok && host.split('.').count() >= 2
 }
 
 fn percent_decode(input: &str) -> Option<String> {
@@ -933,57 +859,14 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-/// Central URL/search router (Via-style). Decides whether `input` is a URL or
-/// a search query and returns the fully-qualified URL to load. Mirrors Via's
-/// address-bar handling: explicit schemes pass through, a bare domain-ish
-/// string gets https://, everything else becomes a search on the active engine.
-pub fn parse_address(input: &str, search_engine: &str) -> String {
-    let t = input.trim();
-    if t.is_empty() {
-        return settings::DEFAULT_HOMEPAGE.to_string();
-    }
-    if let Ok(u) = Url::parse(t) {
-        if u.scheme().len() > 1 && !matches!(u.scheme(), "about" | "data" | "javascript") {
-            return u.to_string();
-        }
-    }
-    // localhost / IP literals are URLs
-    if t.starts_with("localhost") || is_ip_literal(t) {
-        return if t.contains("://") { t.to_string() } else { format!("http://{t}") };
-    }
-    // domain-like: contains a dot + a TLD-ish tail, no spaces
-    let no_scheme = t;
-    if no_scheme.contains('.')
-        && !no_scheme.contains(' ')
-        && !no_scheme.starts_with('/')
-        && looks_like_host(no_scheme)
-    {
-        return format!("https://{no_scheme}");
-    }
-    // otherwise: search
-    let q = urlencoding(no_scheme);
-    let template = match search_engine {
-        "DuckDuckGo" => "https://duckduckgo.com/?q={q}",
-        "Baidu" => "https://www.baidu.com/s?wd={q}",
-        _ => "https://www.google.com/search?q={q}",
-    };
-    template.replace("{q}", &q)
-}
-
-fn is_ip_literal(s: &str) -> bool {
-    let host = s.trim_start_matches("http://").trim_start_matches("https://");
-    let host = host.split('/').next().unwrap_or(host);
-    host.split('.').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())) && host.split('.').count() == 4
-}
-
-fn looks_like_host(s: &str) -> bool {
-    // 'example.com', 'www.example.com/path', 'sub.example.co.uk:8080'
-    let host = s.split(['/', ':']).next().unwrap_or(s);
-    let mut parts = host.split('.');
-    let domain = parts.next_back().unwrap_or("");
-    let has_tld = domain.len() >= 2 && domain.chars().all(|c| c.is_ascii_alphabetic());
-    let labels_ok = host.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
-    has_tld && labels_ok && host.split('.').count() >= 2
+fn real_filename(url: &Url) -> Option<String> {
+    let path = url.path_segments()?;
+    let last = path.last()?;
+    if last.is_empty() { return None; }
+    // Simple percent-decode: replace %XX with the character
+    let decoded = last.replace("%20", " ").replace("%2F", "/");
+    if decoded.is_empty() || decoded == "/" { return None; }
+    Some(decoded)
 }
 
 #[tauri::command]
@@ -995,36 +878,39 @@ pub fn parse_and_load_url(
     parse_address(&input, &engine)
 }
 
-// ===== Session Restore =====
+fn parse_address(t: &str, search_engine: &str) -> String {
+    let t = t.trim();
+    if t.is_empty() { return settings::DEFAULT_HOMEPAGE.to_string(); }
+    if let Ok(u) = Url::parse(t) {
+        if u.scheme().len() > 1 && !matches!(u.scheme(), "about" | "data" | "javascript") {
+            return u.to_string();
+        }
+    }
+    if t.starts_with("localhost") || is_ip_literal(t) {
+        return if t.contains("://") { t.to_string() } else { format!("http://{t}") };
+    }
+    if t.contains('.') && !t.contains(' ') && !t.starts_with('/') && looks_like_host(t) {
+        return format!("https://{t}");
+    }
+    let q = urlencoding(t);
+    let template = match search_engine {
+        "DuckDuckGo" => "https://duckduckgo.com/?q={q}",
+        "Baidu" => "https://www.baidu.com/s?wd={q}",
+        _ => "https://www.google.com/search?q={q}",
+    };
+    template.replace("{q}", &q)
+}
 
+// ===== Session =====
 use std::collections::VecDeque;
 
-/// A serializable snapshot of a single open tab for session persistence.
 #[derive(Clone, Debug, Serialize, serde::Deserialize)]
-pub struct SessionEntry {
-    pub url: String,
-    pub title: String,
-    pub active: bool,
-    pub order: usize,
-}
-
-/// Persistent session store.
+pub struct SessionEntry { pub url: String, pub title: String, pub active: bool, pub order: usize }
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
-pub struct SessionData {
-    pub entries: Vec<SessionEntry>,
-    pub version: u32,
-}
-
-/// Stack of recently closed tabs (for Ctrl+Shift+T undo).
+pub struct SessionData { pub entries: Vec<SessionEntry>, pub version: u32 }
 #[derive(Clone, Debug, Default, Serialize, serde::Deserialize)]
-pub struct ClosedTab {
-    pub url: String,
-    pub title: String,
-    pub ts: u64,
-}
-
+pub struct ClosedTab { pub url: String, pub title: String, pub ts: u64 }
 pub struct ClosedTabStack(pub Mutex<VecDeque<ClosedTab>>);
-
 pub struct SessionState(pub Mutex<SessionData>);
 
 fn session_path(app: &tauri::AppHandle) -> std::path::PathBuf {
@@ -1033,10 +919,7 @@ fn session_path(app: &tauri::AppHandle) -> std::path::PathBuf {
 
 pub fn load_session(app: &tauri::AppHandle) -> SessionData {
     let p = session_path(app);
-    std::fs::read_to_string(&p)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_default()
+    std::fs::read_to_string(&p).ok().and_then(|d| serde_json::from_str(&d).ok()).unwrap_or_default()
 }
 
 pub fn persist_session(app: &tauri::AppHandle, s: &SessionData) {
@@ -1046,65 +929,21 @@ pub fn persist_session(app: &tauri::AppHandle, s: &SessionData) {
 }
 
 #[tauri::command]
-pub fn save_session(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SessionState>,
-    entries: Vec<SessionEntry>,
-) -> Result<(), String> {
-    let mut s = state.0.lock().unwrap();
-    s.entries = entries;
-    s.version = 1;
-    persist_session(&app, &s);
-    Ok(())
+pub fn save_session(app: tauri::AppHandle, state: tauri::State<'_, SessionState>, entries: Vec<SessionEntry>) -> Result<(), String> {
+    let mut s = state.0.lock().unwrap(); s.entries = entries; s.version = 1; persist_session(&app, &s); Ok(())
 }
-
 #[tauri::command]
-pub fn restore_session(
-    state: tauri::State<'_, SessionState>,
-) -> Vec<SessionEntry> {
-    state.0.lock().unwrap().entries.clone()
-}
-
+pub fn restore_session(state: tauri::State<'_, SessionState>) -> Vec<SessionEntry> { state.0.lock().unwrap().entries.clone() }
 #[tauri::command]
-pub fn clear_session(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SessionState>,
-) -> Result<(), String> {
-    let mut s = state.0.lock().unwrap();
-    s.entries.clear();
-    persist_session(&app, &s);
-    Ok(())
+pub fn clear_session(app: tauri::AppHandle, state: tauri::State<'_, SessionState>) -> Result<(), String> {
+    let mut s = state.0.lock().unwrap(); s.entries.clear(); persist_session(&app, &s); Ok(())
 }
-
-// ===== Closed-tab stack =====
-
 #[tauri::command]
-pub fn push_closed_tab(
-    state: tauri::State<'_, ClosedTabStack>,
-    url: String,
-    title: String,
-) -> Result<(), String> {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut stack = state.0.lock().unwrap();
-    stack.push_front(ClosedTab { url, title, ts });
-    // Keep max 50 recently closed tabs.
-    stack.truncate(50);
-    Ok(())
+pub fn push_closed_tab(state: tauri::State<'_, ClosedTabStack>, url: String, title: String) -> Result<(), String> {
+    let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let mut stack = state.0.lock().unwrap(); stack.push_front(ClosedTab { url, title, ts }); stack.truncate(50); Ok(())
 }
-
 #[tauri::command]
-pub fn pop_closed_tab(
-    state: tauri::State<'_, ClosedTabStack>,
-) -> Option<ClosedTab> {
-    state.0.lock().unwrap().pop_front()
-}
-
+pub fn pop_closed_tab(state: tauri::State<'_, ClosedTabStack>) -> Option<ClosedTab> { state.0.lock().unwrap().pop_front() }
 #[tauri::command]
-pub fn list_closed_tabs(
-    state: tauri::State<'_, ClosedTabStack>,
-) -> Vec<ClosedTab> {
-    state.0.lock().unwrap().iter().cloned().collect()
-}
+pub fn list_closed_tabs(state: tauri::State<'_, ClosedTabStack>) -> Vec<ClosedTab> { state.0.lock().unwrap().iter().cloned().collect() }

@@ -5,12 +5,14 @@ mod init;
 mod native;
 mod reader;
 mod settings;
+mod shell;
 
 use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
 
 use commands::{BrowserState, ClosedTabStack, SessionState, SettingsState};
 use features::StoreState;
+use shell::ShellState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -29,35 +31,51 @@ pub fn run() {
             let session = commands::load_session(&handle);
             handle.manage(SessionState(Mutex::new(session)));
             handle.manage(ClosedTabStack(Mutex::new(std::collections::VecDeque::new())));
+            handle.manage(ShellState::default());
+
+            commands::diag_boot();
 
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_title("Via Browser v7.2.1 · Windows — AMOLED Black");
+                let _ = win.set_title(&format!("Via Browser · {}", commands::DIAG_BUILD));
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
                     match event {
                         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                             commands::relayout_tabs(&handle);
+                            shell::clamp_overlay_position(&handle);
                         }
                         _ => {}
                     }
                 });
             }
+
+            // Create the navigation overlay after a short delay to let the window render
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let _ = shell::create_nav_overlay(&handle);
+            });
+
             Ok(())
         })
         .manage(BrowserState::default())
         .invoke_handler(tauri::generate_handler![
-            // tabs & navigation
+            // tab commands
             commands::create_tab,
             commands::close_tab,
             commands::show_tab,
             commands::hide_tab,
             commands::select_tab,
             commands::navigate_tab,
+            commands::navigate_to_newtab,
             commands::eval_tab,
             commands::get_tab_url,
             commands::list_tabs,
             commands::get_browser_state,
-            log_to_file,
+            commands::get_active_tab_info,
+            // nav overlay commands
+            commands::on_nav_click,
+            commands::on_nav_drag,
             // settings & browser
             commands::get_settings,
             commands::set_settings,
@@ -69,6 +87,7 @@ pub fn run() {
             commands::set_night_mode,
             commands::search_suggest,
             commands::parse_and_load_url,
+            log_to_file,
             // session
             commands::save_session,
             commands::restore_session,
@@ -144,10 +163,6 @@ fn log_to_file(msg: String) {
                 .and_then(|mut f| f.write_all(line.as_bytes()));
         }
     }
-    let _ = std::fs::OpenOptions::new()
-        .create(true).append(true)
-        .open("via-debug.log")
-        .and_then(|mut f| f.write_all(line.as_bytes()));
 }
 
 #[tauri::command]
@@ -181,10 +196,7 @@ fn delete_password(service: String, username: String) -> Result<bool, String> {
     native::delete_credential(&service, &username)
 }
 
-/// Report whether password storage is supported on this platform.
 #[tauri::command]
 fn password_save_supported() -> bool {
-    // keyring crate works on Windows (Credential Manager) and Linux (secret-service).
-    // On macOS it uses Keychain. If it fails at runtime, save_password returns Err.
     cfg!(any(target_os = "windows", target_os = "linux", target_os = "macos"))
 }

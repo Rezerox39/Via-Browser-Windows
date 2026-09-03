@@ -270,8 +270,4 @@ pub fn build(s: &Settings) -> String {
     )
 }
 
-/// Returns the JavaScript that injects the floating Via navigation bar into
-/// every child webview page. This runs at DOMContentLoaded via on_page_load.
-pub fn nav_inject_js() -> &'static str {
-    include_str!("../nav.js")
-}
+// Navigation overlay is now a native WebView — no JS injection needed

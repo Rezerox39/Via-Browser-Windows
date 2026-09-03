@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Via - New Tab</title>
+  <style>
+    :root { --bg: #000000; --fg: #ffffff; --fg-muted: #a0a0a0; --accent: #5a83ff; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      background: var(--bg); color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      user-select: none; -webkit-user-select: none;
+    }
+    .logo { width: 90px; height: auto; pointer-events: none; margin-bottom: 36px; }
+    .search-wrap { width: min(420px, 80vw); }
+    .search-box {
+      display: flex; align-items: center; width: 100%; height: 48px;
+      border: 1px solid #333; border-radius: 50px; padding: 0 18px; gap: 10px;
+      color: var(--fg-muted); transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .search-box:hover { border-color: #555; }
+    .search-box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(90,131,255,0.15); }
+    .search-box input {
+      flex: 1; height: 32px; font-size: 15px; color: var(--fg);
+      background: transparent; border: none; outline: none;
+    }
+    .search-box input::placeholder { color: var(--fg-muted); }
+    .search-box svg { width: 18px; height: 18px; flex-shrink: 0; }
+  </style>
+</head>
+<body>
+  <img class="logo" src="/via-logo.svg" alt="Via" draggable="false" />
+  <div class="search-wrap">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
+      <input id="search-input" type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false" autofocus />
+    </div>
+  </div>
+  <script>
+    (function() {
+      var ENGINES = {
+        Google: "https://www.google.com/search?q=",
+        DuckDuckGo: "https://duckduckgo.com/?q=",
+        Bing: "https://www.bing.com/search?q=",
+        Baidu: "https://www.baidu.com/s?wd=",
+        Yahoo: "https://search.yahoo.com/search?p=",
+        Startpage: "https://www.startpage.com/sp/search?query=",
+        Ecosia: "https://www.ecosia.org/search?q=",
+        Yandex: "https://yandex.com/search/?text=",
+        Brave: "https://search.brave.com/search?q=",
+        Wikipedia: "https://en.wikipedia.org/w/index.php?search=",
+        Qwant: "https://www.qwant.com/?q=",
+        SearX: "https://searx.be/search?q="
+      };
+      var searchEngine = "Google";
+      try {
+        var s = JSON.parse(localStorage.getItem('via-settings') || '{}');
+        if (s.search_engine) searchEngine = s.search_engine;
+      } catch(e) {}
+
+      function resolveURL(val) {
+        if (/^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val))
+          return val;
+        if (val.includes('.') && !val.includes(' ') && !val.startsWith('/'))
+          return "https://" + val;
+        return (ENGINES[searchEngine] || ENGINES.Google) + encodeURIComponent(val);
+      }
+
+      var input = document.getElementById('search-input');
+      input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          var val = input.value.trim();
+          if (!val) return;
+          window.location.href = resolveURL(val);
+        }
+        e.stopPropagation();
+      });
+      setTimeout(function() { input.focus(); }, 100);
+    })();
+  </script>
+</body>
+</html>

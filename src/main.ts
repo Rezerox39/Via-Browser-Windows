@@ -21,6 +21,7 @@ type Bookmark = { url: string; title: string; folder: string };
 type HistItem = { url: string; title: string; ts: number };
 type DlItem = { url: string; path: string; title: string; size: number; done: boolean };
 type ClosedTab = { url: string; title: string; ts: number };
+type SessionEntry = { url: string; title: string; active: boolean; order: number };
 const ENGINES: Record<string, string> = {
   Google: "https://www.google.com/search?q=",
   DuckDuckGo: "https://duckduckgo.com/?q=",
@@ -198,15 +199,11 @@ async function goHome() {
 
 function updateTabCount() {
   const count = tabs.length || 1;
-  // Update overlay tab count via Rust
-  invoke("on_nav_click", { action: "noop" }).catch(() => {});
-  // Also try eval on overlay directly
+  // Update overlay via Rust IPC
   try {
     const overlay = (window as any).__TAURI__?.webview?.Webview?.getByLabel?.("nav-overlay");
-    if (overlay) overlay.eval(`var e=document.getElementById('tab-count');if(e)e.textContent='${count}';`);
+    if (overlay) overlay.eval(`if(window.__updateTabCount)window.__updateTabCount(${count});`);
   } catch {}
-  // Also emit event for Rust to update overlay
-  invoke("log_to_file", { msg: `[TAB_COUNT] count=${count}` }).catch(() => {});
 }
 
 /* ═══════ SEARCH ═══════ */
@@ -355,12 +352,82 @@ function setupEvents() {
   listen<string>("nav-action", ev => {
     const action = ev.payload;
     debugLog(`[NAV-ACTION] action="${action}"`);
-    if (action === "home") {
-      goHome();
-    } else if (action === "tabs") {
+    if (action === "tabs") {
       openPanel("Tabs (" + tabs.length + ")", renderTabs);
-    } else if (action === "menu") {
-      openMenu();
+    }
+    // "home" and "menu" are now handled natively by shell.rs
+  });
+  // Menu actions from the menu overlay
+  listen<string>("menu-action", ev => {
+    const action = ev.payload;
+    debugLog(`[MENU-ACTION] action="${action}"`);
+    if (action === "bookmarks") {
+      openPanel("Bookmarks", renderBookmarks);
+    } else if (action === "history") {
+      openPanel("History", renderHistory);
+    } else if (action === "downloads") {
+      refreshDownloads();
+      openPanel("Downloads", renderDownloads);
+    } else if (action === "night") {
+      nightMode = !nightMode;
+      persistSettings();
+      showToast(nightMode ? "Night on" : "Night off");
+    } else if (action === "desktop") {
+      desktopMode = !desktopMode;
+      persistSettings();
+      showToast(desktopMode ? "Desktop UA" : "Mobile UA");
+    } else if (action === "find") {
+      if (activeId) {
+        invoke("eval_tab", { id: activeId, js: "window.__viaSend('findInPage',{})" });
+      }
+    } else if (action === "refresh") {
+      if (activeId) {
+        invoke("eval_tab", { id: activeId, js: "location.reload()" });
+      }
+    } else if (action === "scripts") {
+      openPanel("Scripts", renderScriptsRoot);
+    } else if (action === "siteconfig") {
+      openPanel("Site configuration", renderSiteConfig);
+    } else if (action === "reader") {
+      if (activeId) {
+        invoke("reader_bundle").then(bundle => {
+          invoke("eval_tab", { id: activeId, js: bundle });
+        });
+      }
+    } else if (action === "incognito") {
+      incognitoMode = !incognitoMode;
+      persistSettings();
+      showToast(incognitoMode ? "Incognito on" : "Incognito off");
+    } else if (action === "images") {
+      showImages = !showImages;
+      persistSettings();
+      showToast(showImages ? "Images on" : "Images off");
+      if (activeId) {
+        const css = showImages
+          ? "document.querySelectorAll('[data-via-img-hide]').forEach(e=>e.remove())"
+          : "var s=document.createElement('style');s.setAttribute('data-via-img-hide','1');s.textContent='img,video,picture{visibility:hidden!important}';document.head.appendChild(s)";
+        invoke("eval_tab", { id: activeId, js: css });
+      }
+    } else if (action === "ua") {
+      openPanel("User Agent", renderUA);
+    } else if (action === "save") {
+      if (activeId) {
+        invoke("eval_tab", { id: activeId, js: "window.__viaSend('savePage',{})" }).then(() => {
+          showToast("Page saved");
+        });
+      }
+    } else if (action === "share") {
+      if (activeId) {
+        invoke("get_tab_url", { id: activeId }).then(url => {
+          if (url) { navigator.clipboard.writeText(url); showToast("URL copied"); }
+        });
+      }
+    } else if (action === "exit") {
+      window.close();
+    } else if (action === "log") {
+      openPanel("Network log", renderNetworkLog);
+    } else if (action === "blocklist") {
+      openPanel("Block list", renderBlocklist);
     }
   });
   // Download events
@@ -415,6 +482,59 @@ function setupKeyboard() {
   });
 }
 
+/* ═══════ MENU PANEL RENDERERS ═══════ */
+function renderUA(b: HTMLElement) {
+  b.innerHTML = `
+    <div class="sec-title">User Agent</div>
+    <div class="field"><label>Current mode</label><select id="ua-select">
+      <option value="">Default</option>
+      <option value="Desktop"${settings?.ua_mode === 'Desktop' ? ' selected' : ''}>Desktop (Chrome)</option>
+      <option value="Mobile"${settings?.ua_mode === 'Mobile' ? ' selected' : ''}>Mobile (Chrome)</option>
+      <option value="Via"${settings?.ua_mode === 'Via' ? ' selected' : ''}>Via Browser</option>
+      <option value="Custom"${settings?.ua_mode === 'Custom' ? ' selected' : ''}>Custom</option>
+    </select></div>
+    <div class="field" id="ua-custom-wrap" style="${settings?.ua_mode === 'Custom' ? '' : 'display:none'}"><label>Custom User Agent</label><input id="ua-custom" value="${esc(settings?.custom_ua || '')}" placeholder="Enter custom user agent"/></div>
+    <button class="btn primary" id="ua-save">Save</button>`;
+  const sel = b.querySelector('#ua-select') as HTMLSelectElement;
+  const wrap = b.querySelector('#ua-custom-wrap') as HTMLElement;
+  sel.addEventListener('change', () => { wrap.style.display = sel.value === 'Custom' ? '' : 'none'; });
+  b.querySelector('#ua-save')?.addEventListener('click', async () => {
+    if (!settings) return;
+    settings.ua_mode = sel.value;
+    settings.custom_ua = (b.querySelector('#ua-custom') as HTMLInputElement)?.value || '';
+    await persistSettings();
+    showToast("User agent updated");
+  });
+}
+
+function renderNetworkLog(b: HTMLElement) {
+  b.innerHTML = '<div class="empty-state">Network log captures requests via the resource sniffer.<br>Enable it in Settings → Network log.</div>';
+  invoke<{ url: string; title: string; ts: number }[]>("list_history", { q: null }).then(items => {
+    if (!items || items.length === 0) return;
+    b.innerHTML = '<div class="sec-title">Recent requests</div>' + items.slice(0, 50).map(h =>
+      `<div class="dl-item"><div class="dl-name">${esc(h.title || h.url)}</div><div class="dl-meta">${esc(h.url)}</div></div>`
+    ).join('');
+  });
+}
+
+function renderBlocklist(b: HTMLElement) {
+  b.innerHTML = '<div class="sec-title">Ad blocker filter rules</div><div class="empty-state">Filter rules are loaded from the built-in list.<br>Use "Mark as ad" from the menu to add custom rules.</div>';
+  invoke<string[]>("list_marked_ads").then(rules => {
+    if (!rules || rules.length === 0) return;
+    b.innerHTML = '<div class="sec-title">Custom rules</div>' + rules.map((r, i) =>
+      `<div class="dl-item"><div class="dl-name">${esc(r)}</div><div class="dl-actions"><button data-idx="${i}">Remove</button></div></div>`
+    ).join('');
+    b.querySelectorAll('.dl-actions button').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const idx = parseInt(btn.getAttribute('data-idx') || '0');
+        await invoke("remove_marked_ad", { index: idx });
+        showToast("Rule removed");
+        renderBlocklist(b);
+      });
+    });
+  });
+}
+
 /* ═══════ BOOT ═══════ */
 async function boot() {
   debugLog("[BOOT] Starting build=" + BUILD_ID);
@@ -447,23 +567,54 @@ async function boot() {
 
   window.addEventListener("beforeunload", () => saveSession());
 
-  // Create the default tab immediately
-  debugLog("[BOOT] Creating default tab");
-  try {
-    const info = await invoke<TabInfo>("create_tab", { url: null });
-    debugLog(`[BOOT] Default tab id=${info.id}`);
-    const tab: Tab = { id: info.id, url: "", title: "New Tab", active: true };
-    tabs.push(tab);
-    activeId = info.id;
-    defaultTabId = info.id;
-    showOnlyWebview(info.id);
-    updateTabCount();
-    // Hide the main webview homepage — the child WebView is now the primary surface
-    $("home").classList.add("hidden");
-    debugLog(`[BOOT] Done tabs=${tabs.length} active=${activeId}`);
-  } catch (e) {
-    debugLog(`[BOOT] Failed: ${e}`);
-    $("home").classList.remove("hidden");
+  // Restore session or create default tab
+  let sessionRestored = false;
+  if (restoreTabs) {
+    try {
+      const saved = await invoke<SessionEntry[]>("restore_session");
+      if (saved && saved.length > 0) {
+        debugLog(`[BOOT] Restoring ${saved.length} tabs from session`);
+        for (const entry of saved) {
+          const url = entry.url && entry.url !== "about:blank" ? entry.url : undefined;
+          const info = await invoke<TabInfo>("create_tab", { url: url || null });
+          const tab: Tab = { id: info.id, url: url || "", title: entry.title || "New Tab", active: false };
+          tabs.push(tab);
+        }
+        // Activate the tab that was active
+        const activeEntry = saved.find(s => s.active) || saved[0];
+        const activeTab = tabs.find(t => t.url === activeEntry.url) || tabs[0];
+        if (activeTab) {
+          activeId = activeTab.id;
+          await invoke("show_tab", { id: activeTab.id });
+          showOnlyWebview(activeTab.id);
+        }
+        defaultTabId = tabs[0].id;
+        sessionRestored = true;
+        updateTabCount();
+        $("home").classList.add("hidden");
+        debugLog(`[BOOT] Session restored: ${tabs.length} tabs, active=${activeId}`);
+      }
+    } catch (e) {
+      debugLog(`[BOOT] Session restore failed: ${e}`);
+    }
+  }
+  if (!sessionRestored) {
+    debugLog("[BOOT] Creating default tab");
+    try {
+      const info = await invoke<TabInfo>("create_tab", { url: null });
+      debugLog(`[BOOT] Default tab id=${info.id}`);
+      const tab: Tab = { id: info.id, url: "", title: "New Tab", active: true };
+      tabs.push(tab);
+      activeId = info.id;
+      defaultTabId = info.id;
+      showOnlyWebview(info.id);
+      updateTabCount();
+      $("home").classList.add("hidden");
+      debugLog(`[BOOT] Done tabs=${tabs.length} active=${activeId}`);
+    } catch (e) {
+      debugLog(`[BOOT] Failed: ${e}`);
+      $("home").classList.remove("hidden");
+    }
   }
 }
 

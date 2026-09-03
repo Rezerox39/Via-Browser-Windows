@@ -122,7 +122,7 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
     app.get_window("main").ok_or_else(|| "main window not found".to_string())
 }
 
-fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
+pub fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
     let wvwin = app.get_webview_window("main")?;
     let physical = wvwin.inner_size().ok()?;
     if physical.width == 0 || physical.height == 0 { return None; }
@@ -373,10 +373,15 @@ pub async fn create_tab(
                 let url = payload.url().to_string();
                 diag_log(&format!("[TAB-LIFECYCLE] NAVIGATION_FINISHED label={} url={}", label, url));
                 let tabs = wv_app.state::<BrowserState>();
+                let active_id = *tabs.active.lock().unwrap();
                 let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
                 if let Some(id) = id {
                     if let Some(win) = wv_app.get_webview_window("main") {
                         let _ = win.emit("tab-url", serde_json::json!({ "id": id, "url": url }));
+                    }
+                    // Update overlay address bar if this is the active tab
+                    if active_id == Some(id) {
+                        crate::shell::update_overlay_url(&wv_app, &url);
                     }
                 }
             }
@@ -600,6 +605,7 @@ pub fn select_tab(
             let _ = wv.set_focus();
             let url = wv.url().map(|u| u.to_string()).unwrap_or_default();
             diag_log(&format!("[SELECT_TAB] webview.show+focus url={}", url));
+            crate::shell::update_overlay_url(&app, &url);
             for (_, other) in state.tabs.lock().unwrap().iter() {
                 if other != &label {
                     if let Some(o) = app.get_webview(other) {
@@ -647,6 +653,10 @@ pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
         let _ = wv.show();
         let _ = wv.set_focus();
         diag_log(&format!("[TAB-LIFECYCLE] VISIBLE id={}", id));
+        // Update overlay address bar with this tab's URL
+        if let Ok(url) = wv.url() {
+            crate::shell::update_overlay_url(&app, &url.to_string());
+        }
         // Ensure the navigation overlay stays above this webview
         crate::shell::ensure_overlay_above(&app);
     } else {
@@ -738,7 +748,7 @@ pub fn navigate_to_newtab(
         Some(l) => {
             if let Some(wv) = app.get_webview(l) {
                 // Use eval to navigate to the newtab page via the app protocol
-                let js = "window.location.href = 'newtab.html';";
+                let js = "window.location.replace('tauri://localhost/newtab.html')";
                 match wv.eval(js) {
                     Ok(()) => { diag_log("[NAVIGATE_NEWTAB] OK"); Ok(()) }
                     Err(e) => { diag_log(&format!("[NAVIGATE_NEWTAB] ERROR: {}", e)); Err(e.to_string()) }
@@ -794,6 +804,36 @@ pub fn on_nav_drag(
         crate::shell::move_overlay(&app, ov.x + dx, ov.y + dy)
     } else {
         Err("overlay not found".into())
+    }
+}
+
+/// Handle address bar navigation from the overlay.
+/// Parses the input as URL or search query, navigates the active tab.
+#[tauri::command]
+pub fn address_bar_navigate(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+    sstate: tauri::State<'_, SettingsState>,
+    url: String,
+) -> Result<(), String> {
+    let engine = sstate.0.lock().unwrap().search_engine.clone();
+    let resolved = parse_address(&url, &engine);
+    diag_log(&format!("[ADDR-BAR] input='{}' resolved='{}'", url, resolved));
+    let active = *state.active.lock().unwrap();
+    match active {
+        Some(id) => {
+            let label = state.tabs.lock().unwrap().get(&id).cloned();
+            if let Some(label) = label {
+                if let Some(wv) = app.get_webview(&label) {
+                    let parsed = Url::parse(&resolved).map_err(|e| e.to_string())?;
+                    wv.navigate(parsed).map_err(|e| e.to_string())?;
+                    diag_log("[ADDR-BAR] navigate=OK");
+                    return Ok(());
+                }
+            }
+            Err("active tab has no webview".into())
+        }
+        None => Err("no active tab".into()),
     }
 }
 
@@ -867,6 +907,19 @@ fn real_filename(url: &Url) -> Option<String> {
     let decoded = last.replace("%20", " ").replace("%2F", "/");
     if decoded.is_empty() || decoded == "/" { return None; }
     Some(decoded)
+}
+
+/// Emit an event to the main window (used by overlay WebViews to communicate back)
+#[tauri::command]
+pub fn emit_to_main(
+    app: tauri::AppHandle,
+    event: String,
+    payload: String,
+) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit(&event, &payload);
+    }
+    Ok(())
 }
 
 #[tauri::command]

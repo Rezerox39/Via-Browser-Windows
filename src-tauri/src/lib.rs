@@ -76,6 +76,8 @@ pub fn run() {
             // nav overlay commands
             commands::on_nav_click,
             commands::on_nav_drag,
+            commands::address_bar_navigate,
+            commands::emit_to_main,
             // settings & browser
             commands::get_settings,
             commands::set_settings,

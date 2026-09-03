@@ -1,6 +1,6 @@
 [package]
 name = "via-browser-win"
-version = "7.2.1"
+version = "7.4.0"
 description = "Lightweight Tauri desktop browser inspired by Via Browser"
 edition = "2021"
 

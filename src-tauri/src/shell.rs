@@ -19,6 +19,8 @@ pub struct NavOverlay {
 pub struct ShellState {
     pub overlay: Mutex<Option<NavOverlay>>,
     pub overlay_ready: Mutex<bool>,
+    pub menu_overlay: Mutex<Option<NavOverlay>>,
+    pub menu_open: Mutex<bool>,
 }
 
 impl Default for ShellState {
@@ -26,13 +28,17 @@ impl Default for ShellState {
         Self {
             overlay: Mutex::new(None),
             overlay_ready: Mutex::new(false),
+            menu_overlay: Mutex::new(None),
+            menu_open: Mutex::new(false),
         }
     }
 }
 
 const OVERLAY_LABEL: &str = "nav-overlay";
 const OVERLAY_WIDTH: f64 = 360.0;
-const OVERLAY_HEIGHT: f64 = 56.0;
+const OVERLAY_HEIGHT: f64 = 108.0;
+const MENU_LABEL: &str = "menu-overlay";
+const MENU_WIDTH: f64 = 340.0;
 
 /// Create the native floating navigation overlay.
 /// This overlay is a transparent child WebView that sits ABOVE all browsing WebViews.
@@ -128,7 +134,7 @@ pub fn ensure_overlay_above(app: &tauri::AppHandle) {
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
             let _ = wv.show();
-            let _ = wv.set_focus();
+            // NOTE: do NOT set_focus() here — it steals keyboard focus from the browsing WebView
         }
     }
 }
@@ -163,6 +169,34 @@ pub fn clamp_overlay_position(app: &tauri::AppHandle) {
             diag_log(&format!("[SHELL] overlay clamped x={} y={}", ov.x, ov.y));
         }
     }
+}
+
+/// Create the floating menu overlay (child WebView above browsing WebViews)
+pub fn create_menu_overlay(app: &tauri::AppHandle) -> Result<(), String> {
+    diag_log("[SHELL] Creating menu overlay");
+    let window = app.get_window("main").ok_or("main window not found")?;
+    let bounds = crate::commands::tab_bounds(app).ok_or("window unavailable")?;
+
+    let builder = tauri::WebviewBuilder::new(MENU_LABEL, tauri::WebviewUrl::App("menu-overlay.html".into()))
+        .transparent(true);
+
+    let webview = window.add_child(builder, bounds.position, bounds.size)
+        .map_err(|e| {
+            diag_log(&format!("[SHELL] menu overlay create FAILED: {}", e));
+            e.to_string()
+        })?;
+
+    webview.hide().ok();
+
+    let state = app.state::<ShellState>();
+    *state.menu_overlay.lock().unwrap() = Some(NavOverlay {
+        label: MENU_LABEL.to_string(),
+        x: 0.0, y: 0.0,
+        width: MENU_WIDTH, height: 0.0,
+    });
+
+    diag_log("[SHELL] menu overlay CREATED");
+    Ok(())
 }
 
 /// Handle navigation commands from the overlay
@@ -211,8 +245,8 @@ pub fn nav_home(app: &tauri::AppHandle) -> Result<(), String> {
             let label = browser.tabs.lock().unwrap().get(&id).cloned();
             if let Some(label) = label {
                 if let Some(wv) = app.get_webview(&label) {
-                    // Navigate to newtab page
-                    wv.eval("window.location.href = 'newtab.html'").map_err(|e| e.to_string())?;
+                    // Navigate to newtab page via absolute asset path
+                    wv.eval("window.location.replace('tauri://localhost/newtab.html')").map_err(|e| e.to_string())?;
                 }
             }
             Ok(())
@@ -232,8 +266,38 @@ pub fn nav_tabs(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub fn nav_menu(app: &tauri::AppHandle) -> Result<(), String> {
     diag_log("[NAV] menu");
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.emit("nav-action", "menu");
+    let state = app.state::<ShellState>();
+    let is_open = *state.menu_open.lock().unwrap();
+
+    if is_open {
+        // Close menu overlay
+        *state.menu_open.lock().unwrap() = false;
+        let label = state.menu_overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
+        if let Some(label) = label {
+            if let Some(wv) = app.get_webview(&label) {
+                let _ = wv.eval("document.getElementById('menu-panel').classList.remove('open');");
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let _ = wv.hide();
+            }
+        }
+        diag_log("[NAV] menu CLOSED");
+    } else {
+        // Open menu overlay — create if needed
+        if state.menu_overlay.lock().unwrap().is_none() {
+            let _ = create_menu_overlay(app);
+        }
+        let label = state.menu_overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
+        if let Some(label) = label {
+            if let Some(wv) = app.get_webview(&label) {
+                if let Some(bounds) = crate::commands::tab_bounds(app) {
+                    let _ = wv.set_bounds(bounds);
+                }
+                let _ = wv.show();
+                let _ = wv.eval("document.getElementById('menu-panel').classList.add('open');");
+                *state.menu_open.lock().unwrap() = true;
+                diag_log("[NAV] menu OPENED");
+            }
+        }
     }
     Ok(())
 }
@@ -245,6 +309,24 @@ pub fn update_overlay_tab_count(app: &tauri::AppHandle, count: usize) {
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
             let js = format!("var e=document.getElementById('tab-count');if(e)e.textContent='{}';", count);
+            let _ = wv.eval(&js);
+        }
+    }
+}
+
+/// Update the address bar URL shown in the navigation overlay.
+pub fn update_overlay_url(app: &tauri::AppHandle, url: &str) {
+    let state = app.state::<ShellState>();
+    let label = state.overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
+    if let Some(label) = label {
+        if let Some(wv) = app.get_webview(&label) {
+            // Use base64 encoding to safely pass URL through JS
+            use base64::Engine;
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(url.as_bytes());
+            let js = format!(
+                "if(window.__updateAddressBar)window.__updateAddressBar(atob('{}'));",
+                encoded
+            );
             let _ = wv.eval(&js);
         }
     }

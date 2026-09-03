@@ -11,67 +11,137 @@ html,body{
   user-select:none;-webkit-user-select:none;
 }
 .nav{
-  display:flex;align-items:stretch;justify-content:space-evenly;
+  display:flex;flex-direction:column;
   width:100%;height:100%;
-  background:rgba(16,16,16,0.75);
+  background:rgba(16,16,16,0.88);
   backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
   border:1px solid rgba(255,255,255,0.08);
   border-radius:28px;
   box-shadow:0 8px 32px rgba(0,0,0,0.5);
+  padding:0;
+  overflow:hidden;
+}
+.addr{
+  display:flex;align-items:center;
+  height:38px;padding:0 14px;gap:8px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+  cursor:text;
+}
+.addr svg{width:14px;height:14px;flex-shrink:0;color:#666}
+.addr input{
+  flex:1;height:100%;
+  background:transparent;border:none;outline:none;
+  color:#e0e0e0;font-size:13px;
+  font-family:inherit;
+}
+.addr input::placeholder{color:#555}
+.addr input:focus{color:#fff}
+.btns{
+  display:flex;align-items:stretch;justify-content:space-evenly;
+  flex:1;
   padding:0 4px;
 }
-.nav button{
+.btns button{
   flex:1;height:100%;display:flex;align-items:center;justify-content:center;
-  background:none;border:none;color:#a0a0a0;cursor:pointer;
-  border-radius:20px;transition:color .15s,background .15s;
+  background:none;border:none;color:#888;cursor:pointer;
+  border-radius:16px;transition:color .15s,background .15s;
 }
-.nav button:hover{color:#fff;background:rgba(255,255,255,0.1)}
-.nav button:active{background:rgba(255,255,255,0.18)}
-.nav button:disabled{opacity:0.3;pointer-events:none}
-.nav svg{width:22px;height:22px}
+.btns button:hover{color:#fff;background:rgba(255,255,255,0.1)}
+.btns button:active{background:rgba(255,255,255,0.18)}
+.btns button:disabled{opacity:0.3;pointer-events:none}
+.btns svg{width:20px;height:20px}
 #tab-count{
   display:flex;align-items:center;justify-content:center;
-  min-width:26px;height:20px;border:1.5px solid currentColor;
-  border-radius:5px;font-size:11px;font-weight:700;color:#fff;padding:0 4px;
+  min-width:24px;height:18px;border:1.5px solid currentColor;
+  border-radius:5px;font-size:10px;font-weight:700;color:#fff;padding:0 4px;
+}
+.drag-handle{
+  position:absolute;top:3px;left:50%;transform:translateX(-50%);
+  width:36px;height:4px;border-radius:2px;
+  background:rgba(255,255,255,0.15);
+  pointer-events:none;
 }
 </style>
 </head>
 <body>
 <div class="nav" id="nav-pill">
-  <button id="btn-back" title="Back">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
-  </button>
-  <button id="btn-fwd" title="Forward">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
-  </button>
-  <button id="btn-home" title="Home">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
-  </button>
-  <button id="btn-tabs" title="Tabs">
-    <span id="tab-count">1</span>
-  </button>
-  <button id="btn-menu" title="Menu">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-  </button>
+  <div class="drag-handle"></div>
+  <div class="addr" id="addr-bar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+    <input id="addr-input" type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false"/>
+  </div>
+  <div class="btns">
+    <button id="btn-back" title="Back">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
+    </button>
+    <button id="btn-fwd" title="Forward">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+    <button id="btn-home" title="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
+    </button>
+    <button id="btn-tabs" title="Tabs">
+      <span id="tab-count">1</span>
+    </button>
+    <button id="btn-menu" title="Menu">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
+    </button>
+  </div>
 </div>
 <script>
 (function(){
   var pill=document.getElementById('nav-pill');
+  var addrInput=document.getElementById('addr-input');
 
-  function invoke(action){
-    try{window.__TAURI__.core.invoke('on_nav_click',{action:action})}catch(e){}
+  function invoke(action,data){
+    try{return window.__TAURI__.core.invoke(action,data||{})}catch(e){return Promise.reject(e)}
   }
-  document.getElementById('btn-back').addEventListener('click',function(e){e.stopPropagation();invoke('back')});
-  document.getElementById('btn-fwd').addEventListener('click',function(e){e.stopPropagation();invoke('forward')});
-  document.getElementById('btn-home').addEventListener('click',function(e){e.stopPropagation();invoke('home')});
-  document.getElementById('btn-tabs').addEventListener('click',function(e){e.stopPropagation();invoke('tabs')});
-  document.getElementById('btn-menu').addEventListener('click',function(e){e.stopPropagation();invoke('menu')});
 
-  // 2D dragging
-  var dragging=false,startX=0,startY=0,moved=false;
+  /* Address bar navigation */
+  addrInput.addEventListener('keydown',function(e){
+    e.stopPropagation();
+    if(e.key==='Enter'){
+      e.preventDefault();
+      var val=addrInput.value.trim();
+      if(!val)return;
+      invoke('address_bar_navigate',{url:val}).then(function(){
+        addrInput.blur();
+      }).catch(function(err){
+        console.error('[NAV-OVERLAY] navigate error',err);
+      });
+    }
+    if(e.key==='Escape'){
+      addrInput.blur();
+    }
+  });
+
+  /* Click addr-bar background to focus input */
+  document.getElementById('addr-bar').addEventListener('click',function(e){
+    if(e.target!==addrInput)addrInput.focus();
+  });
+
+  /* Nav buttons */
+  function navInvoke(action){invoke('on_nav_click',{action:action})}
+  document.getElementById('btn-back').addEventListener('click',function(e){e.stopPropagation();navInvoke('back')});
+  document.getElementById('btn-fwd').addEventListener('click',function(e){e.stopPropagation();navInvoke('forward')});
+  document.getElementById('btn-home').addEventListener('click',function(e){e.stopPropagation();navInvoke('home')});
+  document.getElementById('btn-tabs').addEventListener('click',function(e){e.stopPropagation();navInvoke('tabs')});
+  document.getElementById('btn-menu').addEventListener('click',function(e){e.stopPropagation();navInvoke('menu')});
+
+  /* Tab count updates from Rust */
+  window.__updateTabCount=function(n){var e=document.getElementById('tab-count');if(e)e.textContent=n};
+
+  /* Address bar URL updates from Rust */
+  window.__updateAddressBar=function(url){
+    if(document.activeElement===addrInput)return;
+    addrInput.value=url||'';
+  };
+
+  /* 2D Dragging — only from button row background, NOT from address bar */
+  var dragging=false,startX=0,startY=0,dragThreshold=5,hasMoved=false;
   pill.addEventListener('mousedown',function(e){
-    if(e.target.closest('button'))return;
-    dragging=true;moved=false;
+    if(e.target.closest('button')||e.target.closest('.addr'))return;
+    dragging=true;hasMoved=false;
     startX=e.screenX;startY=e.screenY;
     e.preventDefault();
   });
@@ -79,8 +149,10 @@ html,body{
     if(!dragging)return;
     var dx=e.screenX-startX;
     var dy=e.screenY-startY;
-    if(Math.abs(dx)>3||Math.abs(dy)>3)moved=true;
-    if(moved){
+    if(!hasMoved&&(Math.abs(dx)>dragThreshold||Math.abs(dy)>dragThreshold)){
+      hasMoved=true;
+    }
+    if(hasMoved){
       try{window.__TAURI__.core.invoke('on_nav_drag',{dx:dx,dy:dy})}catch(e){}
       startX=e.screenX;startY=e.screenY;
     }

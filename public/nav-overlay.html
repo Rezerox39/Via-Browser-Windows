@@ -11,150 +11,97 @@ html,body{
   user-select:none;-webkit-user-select:none;
 }
 .nav{
-  display:flex;flex-direction:column;
-  width:100%;height:100%;
-  background:rgba(16,16,16,0.88);
-  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
-  border:1px solid rgba(255,255,255,0.08);
-  border-radius:28px;
-  box-shadow:0 8px 32px rgba(0,0,0,0.5);
-  padding:0;
-  overflow:hidden;
+  position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:300px;height:60px;
+  display:flex;align-items:center;justify-content:space-evenly;
+  background:rgba(18,18,18,0.82);
+  backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:32px;
+  box-shadow:0 10px 40px rgba(0,0,0,0.55);
+  padding:0 6px;
+  cursor:grab;
 }
-.addr{
-  display:flex;align-items:center;
-  height:38px;padding:0 14px;gap:8px;
-  border-bottom:1px solid rgba(255,255,255,0.06);
-  cursor:text;
+.nav:active{cursor:grabbing}
+.nav button{
+  width:46px;height:44px;display:flex;align-items:center;justify-content:center;
+  background:none;border:none;color:#9aa0a6;cursor:pointer;
+  border-radius:50%;transition:all .15s;
 }
-.addr svg{width:14px;height:14px;flex-shrink:0;color:#666}
-.addr input{
-  flex:1;height:100%;
-  background:transparent;border:none;outline:none;
-  color:#e0e0e0;font-size:13px;
-  font-family:inherit;
-}
-.addr input::placeholder{color:#555}
-.addr input:focus{color:#fff}
-.btns{
-  display:flex;align-items:stretch;justify-content:space-evenly;
-  flex:1;
-  padding:0 4px;
-}
-.btns button{
-  flex:1;height:100%;display:flex;align-items:center;justify-content:center;
-  background:none;border:none;color:#888;cursor:pointer;
-  border-radius:16px;transition:color .15s,background .15s;
-}
-.btns button:hover{color:#fff;background:rgba(255,255,255,0.1)}
-.btns button:active{background:rgba(255,255,255,0.18)}
-.btns button:disabled{opacity:0.3;pointer-events:none}
-.btns svg{width:20px;height:20px}
+.nav button:hover{color:#fff;background:rgba(255,255,255,0.10)}
+.nav button:active{background:rgba(255,255,255,0.18)}
+.nav svg{width:22px;height:22px}
 #tab-count{
   display:flex;align-items:center;justify-content:center;
-  min-width:24px;height:18px;border:1.5px solid currentColor;
-  border-radius:5px;font-size:10px;font-weight:700;color:#fff;padding:0 4px;
-}
-.drag-handle{
-  position:absolute;top:3px;left:50%;transform:translateX(-50%);
-  width:36px;height:4px;border-radius:2px;
-  background:rgba(255,255,255,0.15);
-  pointer-events:none;
+  min-width:22px;height:18px;border:1.5px solid currentColor;
+  border-radius:5px;font-size:9px;font-weight:700;color:#fff;padding:0 3px;
 }
 </style>
 </head>
 <body>
 <div class="nav" id="nav-pill">
-  <div class="drag-handle"></div>
-  <div class="addr" id="addr-bar">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-    <input id="addr-input" type="text" placeholder="Search or enter URL" autocomplete="off" spellcheck="false"/>
-  </div>
-  <div class="btns">
-    <button id="btn-back" title="Back">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M15 18l-6-6 6-6"/></svg>
-    </button>
-    <button id="btn-fwd" title="Forward">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 18l6-6-6-6"/></svg>
-    </button>
-    <button id="btn-home" title="Home">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>
-    </button>
-    <button id="btn-tabs" title="Tabs">
-      <span id="tab-count">1</span>
-    </button>
-    <button id="btn-menu" title="Menu">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg>
-    </button>
-  </div>
+  <button id="btn-back" title="Back">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+  </button>
+  <button id="btn-fwd" title="Forward">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><polyline points="12 5 19 12 12 19"/></svg>
+  </button>
+  <button id="btn-home" title="Home">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>
+  </button>
+  <button id="btn-tabs" title="Tabs">
+    <span id="tab-count">1</span>
+  </button>
+  <button id="btn-menu" title="Menu">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="19" r="1.5" fill="currentColor"/></svg>
+  </button>
 </div>
 <script>
 (function(){
   var pill=document.getElementById('nav-pill');
-  var addrInput=document.getElementById('addr-input');
 
-  function invoke(action,data){
-    try{return window.__TAURI__.core.invoke(action,data||{})}catch(e){return Promise.reject(e)}
+  function fireCommand(action){
+    // Primary: use Tauri IPC if available
+    try{
+      if(window.__TAURI__ && window.__TAURI__.core){
+        window.__TAURI__.core.invoke('on_nav_click',{action:action});
+        return;
+      }
+    }catch(e){}
+    // Fallback: navigate to via-action:// URL, intercepted by on_navigation in Rust
+    try{
+      window.location.href='via-action://'+action;
+    }catch(e){}
   }
 
-  /* Address bar navigation */
-  addrInput.addEventListener('keydown',function(e){
-    e.stopPropagation();
-    if(e.key==='Enter'){
-      e.preventDefault();
-      var val=addrInput.value.trim();
-      if(!val)return;
-      invoke('address_bar_navigate',{url:val}).then(function(){
-        addrInput.blur();
-      }).catch(function(err){
-        console.error('[NAV-OVERLAY] navigate error',err);
-      });
-    }
-    if(e.key==='Escape'){
-      addrInput.blur();
-    }
-  });
+  document.getElementById('btn-back').addEventListener('click',function(e){e.stopPropagation();fireCommand('back')});
+  document.getElementById('btn-fwd').addEventListener('click',function(e){e.stopPropagation();fireCommand('forward')});
+  document.getElementById('btn-home').addEventListener('click',function(e){e.stopPropagation();fireCommand('home')});
+  document.getElementById('btn-tabs').addEventListener('click',function(e){e.stopPropagation();fireCommand('tabs')});
+  document.getElementById('btn-menu').addEventListener('click',function(e){e.stopPropagation();fireCommand('menu')});
 
-  /* Click addr-bar background to focus input */
-  document.getElementById('addr-bar').addEventListener('click',function(e){
-    if(e.target!==addrInput)addrInput.focus();
-  });
-
-  /* Nav buttons */
-  function navInvoke(action){invoke('on_nav_click',{action:action})}
-  document.getElementById('btn-back').addEventListener('click',function(e){e.stopPropagation();navInvoke('back')});
-  document.getElementById('btn-fwd').addEventListener('click',function(e){e.stopPropagation();navInvoke('forward')});
-  document.getElementById('btn-home').addEventListener('click',function(e){e.stopPropagation();navInvoke('home')});
-  document.getElementById('btn-tabs').addEventListener('click',function(e){e.stopPropagation();navInvoke('tabs')});
-  document.getElementById('btn-menu').addEventListener('click',function(e){e.stopPropagation();navInvoke('menu')});
-
-  /* Tab count updates from Rust */
+  /* Tab count updates from main window via eval */
   window.__updateTabCount=function(n){var e=document.getElementById('tab-count');if(e)e.textContent=n};
 
-  /* Address bar URL updates from Rust */
-  window.__updateAddressBar=function(url){
-    if(document.activeElement===addrInput)return;
-    addrInput.value=url||'';
-  };
-
-  /* 2D Dragging — only from button row background, NOT from address bar */
-  var dragging=false,startX=0,startY=0,dragThreshold=5,hasMoved=false;
+  /* 2D Dragging — grab from background area only */
+  var dragging=false,startX=0,startY=0,hasMoved=false,THRESHOLD=6;
   pill.addEventListener('mousedown',function(e){
-    if(e.target.closest('button')||e.target.closest('.addr'))return;
+    if(e.target.closest('button'))return;
     dragging=true;hasMoved=false;
-    startX=e.screenX;startY=e.screenY;
+    startX=e.clientX;startY=e.clientY;
     e.preventDefault();
   });
   document.addEventListener('mousemove',function(e){
     if(!dragging)return;
-    var dx=e.screenX-startX;
-    var dy=e.screenY-startY;
-    if(!hasMoved&&(Math.abs(dx)>dragThreshold||Math.abs(dy)>dragThreshold)){
-      hasMoved=true;
-    }
+    var dx=e.clientX-startX, dy=e.clientY-startY;
+    if(!hasMoved && (Math.abs(dx)>THRESHOLD || Math.abs(dy)>THRESHOLD)) hasMoved=true;
     if(hasMoved){
-      try{window.__TAURI__.core.invoke('on_nav_drag',{dx:dx,dy:dy})}catch(e){}
-      startX=e.screenX;startY=e.screenY;
+      try{
+        if(window.__TAURI__ && window.__TAURI__.core){
+          window.__TAURI__.core.invoke('on_nav_drag',{dx:dx,dy:dy});
+        }
+      }catch(ex){}
+      startX=e.clientX;startY=e.clientY;
     }
   });
   document.addEventListener('mouseup',function(){dragging=false});

@@ -48,6 +48,24 @@ let downloads: DlItem[] = [];
 let nightMode = false, desktopMode = true, textSize = 1.0, showImages = true;
 let adblockOn = true, incognitoMode = false, restoreTabs = false;
 let menuOpen = false;
+let uiLayerCount = 0;
+let shellShowTimer: any = null;
+
+// Hide tab webviews so the main webview's DOM (menu/panels) becomes visible.
+// "Show" is debounced so menu→panel transitions don't flicker tabs back in.
+function setShellUiVisible(visible: boolean) {
+  if (visible) {
+    if (shellShowTimer) return;
+    shellShowTimer = setTimeout(() => {
+      shellShowTimer = null;
+      if (uiLayerCount > 0) return;
+      invoke('set_tabs_visible', { visible: true }).catch(e => debugLog(`[SHELL] set_tabs_visible FAIL: ${e}`));
+    }, 200);
+  } else {
+    if (shellShowTimer) { clearTimeout(shellShowTimer); shellShowTimer = null; }
+    invoke('set_tabs_visible', { visible: false }).catch(e => debugLog(`[SHELL] set_tabs_visible FAIL: ${e}`));
+  }
+}
 let menuPage = 0;
 const MENU_PAGE_SIZE = 12;
 let closedTabs: ClosedTab[] = [];
@@ -216,11 +234,7 @@ async function goHome() {
 
 function updateTabCount() {
   const count = tabs.length || 1;
-  // Update overlay via Rust IPC
-  try {
-    const overlay = (window as any).__TAURI__?.webview?.Webview?.getByLabel?.("nav-overlay");
-    if (overlay) overlay.eval(`if(window.__updateTabCount)window.__updateTabCount(${count});`);
-  } catch {}
+  invoke('update_overlay_tab_count_cmd', { count }).catch(() => {});
 }
 
 /* ═══════ SEARCH ═══════ */
@@ -256,15 +270,21 @@ function buildMenu() {
   $("side-menu-pagination").querySelectorAll(".pg-dot").forEach(el => el.addEventListener("click", () => { menuPage = parseInt(el.getAttribute("data-p")!); buildMenu(); }));
 }
 function refreshMenu() { if (menuOpen) buildMenu(); }
-function openMenu() { menuOpen = true; buildMenu(); $("side-menu").classList.add("open"); $("menu-backdrop").classList.add("open"); }
-function closeMenu() { menuOpen = false; $("side-menu").classList.remove("open"); $("menu-backdrop").classList.remove("open"); }
+function openMenu() { menuOpen = true; buildMenu(); $("side-menu").classList.add("open"); $("menu-backdrop").classList.add("open"); uiLayerCount++; setShellUiVisible(false); }
+function closeMenu() { menuOpen = false; $("side-menu").classList.remove("open"); $("menu-backdrop").classList.remove("open"); uiLayerCount = Math.max(0, uiLayerCount - 1); if (uiLayerCount === 0) setShellUiVisible(true); }
 
 /* ═══════ PANEL ═══════ */
 function openPanel(title: string, fn: (b: HTMLElement) => void) {
+  debugLog(`[PANEL] openPanel title="${title}" uiLayer=${uiLayerCount}`);
   $("panel-title").textContent = title; const b = $("panel-body"); b.innerHTML = ""; fn(b);
   $("panel").classList.add("open"); $("panel-backdrop").classList.add("open");
+  uiLayerCount++;
+  setShellUiVisible(false);
 }
-function closePanel() { $("panel").classList.remove("open"); $("panel-backdrop").classList.remove("open"); }
+function closePanel() { $("panel").classList.remove("open"); $("panel-backdrop").classList.remove("open");
+  uiLayerCount = Math.max(0, uiLayerCount - 1);
+  if (uiLayerCount === 0) setShellUiVisible(true);
+}
 
 /* ═══════ PANEL RENDERERS ═══════ */
 function renderBookmarks(b: HTMLElement) {
@@ -378,8 +398,9 @@ function setupEvents() {
     debugLog(`[NAV-ACTION] action="${action}"`);
     if (action === "tabs") {
       openPanel("Tabs (" + tabs.length + ")", renderTabs);
+    } else if (action === "menu") {
+      if (menuOpen) closeMenu(); else openMenu();
     }
-    // "home" and "menu" are now handled natively by shell.rs
   });
   // Menu actions from the menu overlay
   listen<string>("menu-action", ev => {

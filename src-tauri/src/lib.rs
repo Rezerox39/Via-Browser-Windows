@@ -79,6 +79,8 @@ pub fn run() {
             commands::on_nav_click,
             commands::on_nav_drag,
             commands::address_bar_navigate,
+            commands::set_tabs_visible,
+            commands::update_overlay_tab_count_cmd,
             commands::emit_to_main,
             commands::diag_test_tab,
             // settings & browser

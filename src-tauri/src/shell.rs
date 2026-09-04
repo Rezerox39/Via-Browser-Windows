@@ -8,6 +8,11 @@ use crate::commands::{diag_log, BrowserState};
 /// 2. The menu overlay WebView (right-side drawer, above browsing WebViews)
 /// 3. Overlay positions (draggable, persisted)
 /// 4. Navigation commands routed to the active tab
+///
+/// CRITICAL: The `on_navigation` callback runs on the WebView2 compositor thread,
+/// NOT the main thread. Any window/webview management call (`add_child`, `set_bounds`,
+/// `show`, `hide`, `eval`) MUST be dispatched to the main thread via
+/// `app.run_on_main_thread()` to avoid deadlock.
 
 pub struct NavOverlay {
     pub label: String,
@@ -21,9 +26,6 @@ pub struct ShellState {
     pub overlay: Mutex<Option<NavOverlay>>,
     pub overlay_ready: Mutex<bool>,
     pub overlay_creating: Mutex<bool>,
-    pub menu_overlay: Mutex<Option<NavOverlay>>,
-    pub menu_open: Mutex<bool>,
-    pub menu_creating: Mutex<bool>,
 }
 
 impl Default for ShellState {
@@ -32,9 +34,6 @@ impl Default for ShellState {
             overlay: Mutex::new(None),
             overlay_ready: Mutex::new(false),
             overlay_creating: Mutex::new(false),
-            menu_overlay: Mutex::new(None),
-            menu_open: Mutex::new(false),
-            menu_creating: Mutex::new(false),
         }
     }
 }
@@ -42,9 +41,6 @@ impl Default for ShellState {
 const OVERLAY_LABEL: &str = "nav-overlay";
 const OVERLAY_WIDTH: f64 = 360.0;
 const OVERLAY_HEIGHT: f64 = 108.0;
-const MENU_LABEL: &str = "menu-overlay";
-const MENU_WIDTH: f64 = 340.0;
-
 // ─── Position persistence ───
 
 fn pos_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
@@ -123,9 +119,15 @@ pub fn nav_home(app: &tauri::AppHandle) -> Result<(), String> {
             let label = browser.tabs.lock().unwrap().get(&id).cloned();
             if let Some(label) = label {
                 if let Some(wv) = app.get_webview(&label) {
-                    wv.eval("window.location.replace('tauri://localhost/newtab.html')").map_err(|e| e.to_string())?;
+                    // Ensure the active tab is visible first, then navigate home.
+                    if let Some(bounds) = crate::commands::tab_bounds(app) {
+                        let _ = wv.set_bounds(bounds);
+                    }
+                    let _ = wv.show();
+                    let _ = wv.eval("window.location.replace('tauri://localhost/newtab.html')");
                 }
             }
+            crate::shell::ensure_overlay_above(app);
             Ok(())
         }
         None => Err("no active tab".into()),
@@ -141,53 +143,16 @@ pub fn nav_tabs(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 pub fn nav_menu(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[NAV] menu");
-    let state = app.state::<ShellState>();
-    let is_open = *state.menu_open.lock().unwrap();
-    if is_open {
-        close_menu_overlay(app);
-    } else {
-        open_menu_overlay(app);
+    diag_log("[NAV] menu -> frontend side-menu");
+    // The full Via menu (side-menu with all items) lives in the main webview.
+    // Emit nav-action "menu" and the frontend toggles it, hiding tab webviews
+    // so the main webview (and its menu DOM) becomes visible.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("nav-action", "menu");
     }
     Ok(())
 }
 
-fn open_menu_overlay(app: &tauri::AppHandle) {
-    let state = app.state::<ShellState>();
-    if state.menu_overlay.lock().unwrap().is_none() {
-        if let Err(e) = create_menu_overlay(app) {
-            diag_log(&format!("[NAV] menu CREATE FAILED: {}", e));
-            return;
-        }
-    }
-    let label = state.menu_overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
-    if let Some(label) = label {
-        if let Some(wv) = app.get_webview(&label) {
-            if let Some(bounds) = crate::commands::tab_bounds(app) {
-                let _ = wv.set_bounds(bounds);
-            }
-            let _ = wv.show();
-            *state.menu_open.lock().unwrap() = true;
-            diag_log("[NAV] menu OPENED");
-        } else {
-            diag_log("[NAV] menu webview not found after create");
-        }
-    } else {
-        diag_log("[NAV] menu overlay label is None after create");
-    }
-}
-
-fn close_menu_overlay(app: &tauri::AppHandle) {
-    let state = app.state::<ShellState>();
-    *state.menu_open.lock().unwrap() = false;
-    let label = state.menu_overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
-    if let Some(label) = label {
-        if let Some(wv) = app.get_webview(&label) {
-            let _ = wv.hide();
-        }
-    }
-    diag_log("[NAV] menu CLOSED");
-}
 
 // ─── Navigation overlay (the pill bar) ───
 
@@ -244,33 +209,41 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
             if url.scheme() == "via-action" {
                 let action = url.host_str().unwrap_or("").to_string();
                 diag_log(&format!("[NAV-OVERLAY] via-action action={}", action));
-                match action.as_str() {
-                    "back" => { let _ = nav_back(&overlay_app); }
-                    "forward" => { let _ = nav_forward(&overlay_app); }
-                    "home" => { let _ = nav_home(&overlay_app); }
-                    "tabs" => { let _ = nav_tabs(&overlay_app); }
-                    "menu" => { let _ = nav_menu(&overlay_app); }
-                    a if a.starts_with("menu-item:") => {
-                        let item_action = &a[10..];
-                        diag_log(&format!("[NAV-OVERLAY] menu-item: {}", item_action));
-                        if let Some(win) = overlay_app.get_webview_window("main") {
-                            let _ = win.emit("menu-action", item_action);
+                // Dispatch ALL operations to the main thread to avoid WebView2 deadlock.
+                // The on_navigation callback runs on the WebView2 compositor thread.
+                let app2 = overlay_app.clone();
+                let _ = overlay_app.run_on_main_thread(move || {
+                    match action.as_str() {
+                        "back" => { let _ = nav_back(&app2); }
+                        "forward" => { let _ = nav_forward(&app2); }
+                        "home" => { let _ = nav_home(&app2); }
+                        "tabs" => { let _ = nav_tabs(&app2); }
+                        "menu" => { let _ = nav_menu(&app2); }
+                        a if a.starts_with("menu-item:") => {
+                            let item_action = a[10..].to_string();
+                            diag_log(&format!("[NAV-OVERLAY] menu-item: {}", item_action));
+                            if let Some(win) = app2.get_webview_window("main") {
+                                let _ = win.emit("menu-action", item_action);
+                            }
                         }
+                        _ => diag_log(&format!("[NAV-OVERLAY] unknown via-action: {}", action)),
                     }
-                    _ => diag_log(&format!("[NAV-OVERLAY] unknown via-action: {}", action)),
-                }
+                });
                 return false;
             }
             if url.scheme() == "via-drag" {
                 if let Some(coords) = url.host_str() {
                     let parts: Vec<f64> = coords.split(',').filter_map(|p| p.parse().ok()).collect();
                     if parts.len() == 2 {
-                        // Relative drag: apply delta to current overlay position
-                        let state = overlay_app.state::<ShellState>();
-                        let current = { state.overlay.lock().unwrap().as_ref().map(|ov| (ov.x, ov.y)) };
-                        if let Some((cx, cy)) = current {
-                            let _ = move_overlay(&overlay_app, cx + parts[0], cy + parts[1]);
-                        }
+                        let app2 = overlay_app.clone();
+                        let _ = overlay_app.run_on_main_thread(move || {
+                            // Read current position, apply delta, and move
+                            let state = app2.state::<ShellState>();
+                            let current = { state.overlay.lock().unwrap().as_ref().map(|ov| (ov.x, ov.y)) };
+                            if let Some((cx, cy)) = current {
+                                let _ = move_overlay(&app2, cx + parts[0], cy + parts[1]);
+                            }
+                        });
                     }
                 }
                 return false;
@@ -298,8 +271,7 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
     *state.overlay_ready.lock().unwrap() = true;
 
     let _ = webview.show();
-
-    diag_log("[SHELL] overlay z-order=above-webview — READY");
+    diag_log("[NAV-OVERLAY] z-order=above-webview — READY");
 
     Ok(())
 }
@@ -386,73 +358,6 @@ pub fn clamp_overlay_position(app: &tauri::AppHandle) {
             save_overlay_position(app, nx, ny);
         }
     }
-}
-
-// ─── Menu overlay (right-side drawer) ───
-
-pub fn create_menu_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[SHELL] Creating menu overlay");
-
-    let state = app.state::<ShellState>();
-    if state.menu_overlay.lock().unwrap().is_some() {
-        diag_log("[SHELL] menu overlay already exists, skipping");
-        return Ok(());
-    }
-
-    {
-        let mut creating = state.menu_creating.lock().unwrap();
-        if *creating {
-            diag_log("[SHELL] menu overlay already being created, skipping");
-            return Ok(());
-        }
-        *creating = true;
-    }
-
-    let window = app.get_window("main").ok_or("main window not found")?;
-    let bounds = crate::commands::tab_bounds(app).ok_or("window unavailable")?;
-
-    let overlay_app = app.clone();
-    let builder = WebviewBuilder::new(MENU_LABEL, WebviewUrl::App("menu-overlay.html".into()))
-        .on_navigation(move |url| {
-            if url.scheme() == "via-action" {
-                let action = url.host_str().unwrap_or("").to_string();
-                diag_log(&format!("[MENU-OVERLAY] via-action action={}", action));
-                match action.as_str() {
-                    "close" | "menu" => {
-                        close_menu_overlay(&overlay_app);
-                    }
-                    a if a.starts_with("menu-item:") => {
-                        let item_action = &a[10..];
-                        diag_log(&format!("[MENU-OVERLAY] menu-item: {}", item_action));
-                        if let Some(win) = overlay_app.get_webview_window("main") {
-                            let _ = win.emit("menu-action", item_action);
-                        }
-                    }
-                    _ => diag_log(&format!("[MENU-OVERLAY] unknown via-action: {}", action)),
-                }
-                return false;
-            }
-            return true;
-        });
-
-    let webview = window.add_child(builder, bounds.position, bounds.size)
-        .map_err(|e| {
-            diag_log(&format!("[SHELL] menu overlay create FAILED: {}", e));
-            *state.menu_creating.lock().unwrap() = false;
-            e.to_string()
-        })?;
-
-    webview.hide().ok();
-
-    *state.menu_overlay.lock().unwrap() = Some(NavOverlay {
-        label: MENU_LABEL.to_string(),
-        x: 0.0, y: 0.0,
-        width: MENU_WIDTH, height: 0.0,
-    });
-    *state.menu_creating.lock().unwrap() = false;
-
-    diag_log("[SHELL] menu overlay CREATED");
-    Ok(())
 }
 
 /// Update overlay tab count display

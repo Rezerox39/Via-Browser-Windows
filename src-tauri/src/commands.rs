@@ -1161,3 +1161,40 @@ pub fn push_closed_tab(state: tauri::State<'_, ClosedTabStack>, url: String, tit
 pub fn pop_closed_tab(state: tauri::State<'_, ClosedTabStack>) -> Option<ClosedTab> { state.0.lock().unwrap().pop_front() }
 #[tauri::command]
 pub fn list_closed_tabs(state: tauri::State<'_, ClosedTabStack>) -> Vec<ClosedTab> { state.0.lock().unwrap().iter().cloned().collect() }
+
+// ─── Shell chrome visibility ───
+// When a frontend panel/menu needs to show, we hide ALL native tab webviews
+// so the main webview's DOM (panels, side-menu) becomes visible.
+// The nav overlay stays visible (it's managed separately in shell.rs).
+
+#[tauri::command]
+pub fn set_tabs_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let state = app.state::<BrowserState>();
+    let active = *state.active.lock().unwrap();
+    let tab_labels: Vec<String> = state.tabs.lock().unwrap().values().cloned().collect();
+    for label in tab_labels {
+        if let Some(wv) = app.get_webview(&label) {
+            if visible {
+                // Only show the active tab; keep others hidden
+                let is_active = active.map(|a| label == format!("tab-{}", a)).unwrap_or(false);
+                if is_active {
+                    let _ = wv.show();
+                }
+            } else {
+                let _ = wv.hide();
+            }
+        }
+    }
+    diag_log(&format!("[SHELL] set_tabs_visible={} active_tab={:?}", visible, active));
+    if visible {
+        crate::shell::ensure_overlay_above(&app);
+    }
+    Ok(())
+}
+
+
+#[tauri::command]
+pub fn update_overlay_tab_count_cmd(app: tauri::AppHandle, count: usize) {
+    crate::shell::update_overlay_tab_count(&app, count);
+}
+

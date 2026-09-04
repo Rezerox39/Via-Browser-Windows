@@ -601,8 +601,13 @@ async function boot() {
   if (!sessionRestored) {
     debugLog("[BOOT] Creating default tab");
     try {
+      // Show loading state on homepage
+      const homeInput = $("home-input") as HTMLInputElement;
+      if (homeInput) homeInput.placeholder = "Loading browser…";
+      
       const info = await invoke<TabInfo>("create_tab", { url: null });
-      debugLog(`[BOOT] Default tab id=${info.id}`);
+      debugLog(`[BOOT] Default tab id=${info.id} label=tab-${info.id}`);
+      
       const tab: Tab = { id: info.id, url: "", title: "New Tab", active: true };
       tabs.push(tab);
       activeId = info.id;
@@ -612,8 +617,12 @@ async function boot() {
       $("home").classList.add("hidden");
       debugLog(`[BOOT] Done tabs=${tabs.length} active=${activeId}`);
     } catch (e) {
-      debugLog(`[BOOT] Failed: ${e}`);
+      debugLog(`[BOOT] create_tab FAILED: ${e}`);
+      showToast("Failed to create browser tab: " + String(e).slice(0, 80));
+      // Keep homepage visible as fallback — user can search from here
       $("home").classList.remove("hidden");
+      const homeInput = $("home-input") as HTMLInputElement;
+      if (homeInput) homeInput.placeholder = "Search or enter URL";
     }
   }
 }

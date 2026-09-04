@@ -12,6 +12,27 @@ use crate::settings::{self, Settings};
 // ═══════ DIAGNOSTICS ═══════
 pub const DIAG_BUILD: &str = "FUNCTIONAL_DIAGNOSTICS_2026_09_02_A";
 
+// Cached initialization script — built once per settings change, reused per create_tab.
+use std::sync::OnceLock;
+static CACHED_INIT_SCRIPT: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+
+/// Get or rebuild the cached init script.
+pub fn get_or_build_init_script(settings: &Settings) -> String {
+    let cell = CACHED_INIT_SCRIPT.get_or_init(|| std::sync::Mutex::new(String::new()));
+    let mut cache = cell.lock().unwrap();
+    if cache.is_empty() {
+        *cache = init::build(settings);
+    }
+    cache.clone()
+}
+
+/// Rebuild the cached init script (call when settings change).
+pub fn rebuild_init_script(settings: &Settings) {
+    let cell = CACHED_INIT_SCRIPT.get_or_init(|| std::sync::Mutex::new(String::new()));
+    let mut cache = cell.lock().unwrap();
+    *cache = init::build(settings);
+}
+
 /// Deterministic log path: next to the exe (or Desktop fallback on Windows).
 fn diag_log_path() -> std::path::PathBuf {
     // Primary: next to the exe
@@ -176,6 +197,7 @@ pub fn load_settings(app: &tauri::AppHandle) -> Settings {
 }
 
 pub fn persist_settings(app: &tauri::AppHandle, s: &Settings) {
+    rebuild_init_script(s);
     if let Ok(dir) = app.path().app_config_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let p = dir.join("via-settings.json");
@@ -310,10 +332,13 @@ pub async fn create_tab(
     let nav_settings = s.clone();
     let dl_label = label.clone();
     let nav_app = app.clone();
+    let new_win_app = app.clone();
 
+    let init_script = get_or_build_init_script(&s);
+    diag_log(&format!("[TAB_CREATE] init_script_len={}", init_script.len()));
     let mut builder = WebviewBuilder::new(label.clone(), webview_url)
         .auto_resize()
-        .initialization_script(init::build(&s))
+        .initialization_script(&init_script)
         .on_download(move |wv, event| {
             let wv_app = wv.app_handle();
             let win = wv_app.get_webview_window("main");
@@ -367,19 +392,24 @@ pub async fn create_tab(
             let label = wv.label().to_string();
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
                 diag_log(&format!("[NAVIGATION] PAGE_LOAD_STARTED label={} url={}", label, payload.url()));
-                // Navigation overlay is now native — no JS injection needed
             }
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
                 let url = payload.url().to_string();
                 diag_log(&format!("[TAB-LIFECYCLE] NAVIGATION_FINISHED label={} url={}", label, url));
+                // Use try_lock to avoid deadlock with WebView2 callback thread
                 let tabs = wv_app.state::<BrowserState>();
-                let active_id = *tabs.active.lock().unwrap();
-                let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
+                let active_id = match tabs.active.try_lock() {
+                    Ok(guard) => *guard,
+                    Err(_) => { diag_log("[TAB-LIFECYCLE] NAV_FINISHED: active lock contention"); return; }
+                };
+                let id = match tabs.tabs.try_lock() {
+                    Ok(guard) => guard.iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None }),
+                    Err(_) => { diag_log("[TAB-LIFECYCLE] NAV_FINISHED: tabs lock contention"); return; }
+                };
                 if let Some(id) = id {
                     if let Some(win) = wv_app.get_webview_window("main") {
                         let _ = win.emit("tab-url", serde_json::json!({ "id": id, "url": url }));
                     }
-                    // Update overlay address bar if this is the active tab
                     if active_id == Some(id) {
                         crate::shell::update_overlay_url(&wv_app, &url);
                     }
@@ -390,7 +420,10 @@ pub async fn create_tab(
             let wv_app = wv.app_handle();
             let label = wv.label().to_string();
             let tabs = wv_app.state::<BrowserState>();
-            let id = tabs.tabs.lock().unwrap().iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None });
+            let id = match tabs.tabs.try_lock() {
+                Ok(guard) => guard.iter().find_map(|(i, l)| if *l == label { Some(*i) } else { None }),
+                Err(_) => return,
+            };
             if let Some(id) = id {
                 if let Some(win) = wv_app.get_webview_window("main") {
                     if let Some(rest) = title.strip_prefix("VIA:") {
@@ -429,20 +462,13 @@ pub async fn create_tab(
             true
         })
         .on_new_window(move |url, _features| {
-            let active = app.state::<BrowserState>().active.lock().unwrap().clone();
-            let label = active.and_then(|id| app.state::<BrowserState>().tabs.lock().unwrap().get(&id).cloned());
-            let nav_url = url.clone();
+            let nav_url = url.to_string();
             diag_log(&format!("[NAVIGATION] NEW_WINDOW url={}", nav_url));
-            match label {
-                Some(label) => {
-                    if let Some(wv) = app.get_webview(&label) {
-                        let _ = wv.navigate(nav_url);
-                    }
-                }
-                None => {
-                    let _ = app.get_webview_window("main")
-                        .map(|win| win.emit("new-window-request", serde_json::json!({ "url": nav_url.to_string() })));
-                }
+            // Emit event to frontend to handle new tab creation.
+            // Do NOT acquire BrowserState locks here — this callback runs on the
+            // WebView2 thread and would deadlock if the Tokio thread holds the lock.
+            if let Some(win) = new_win_app.get_webview_window("main") {
+                let _ = win.emit("new-window-request", serde_json::json!({ "url": nav_url }));
             }
             tauri::webview::NewWindowResponse::Deny
         });

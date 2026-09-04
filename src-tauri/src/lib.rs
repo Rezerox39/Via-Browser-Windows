@@ -80,6 +80,7 @@ pub fn run() {
             commands::on_nav_drag,
             commands::address_bar_navigate,
             commands::emit_to_main,
+            commands::diag_test_tab,
             // settings & browser
             commands::get_settings,
             commands::set_settings,

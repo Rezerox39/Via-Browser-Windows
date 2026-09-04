@@ -106,7 +106,9 @@ html,body{
     var dx=e.clientX-startX, dy=e.clientY-startY;
     if(!hasMoved && (Math.abs(dx)>THRESHOLD || Math.abs(dy)>THRESHOLD)) hasMoved=true;
     if(hasMoved){
-      callRust('on_nav_drag',{dx:dx,dy:dy}).catch(function(){});
+      callRust('on_nav_drag',{dx:dx,dy:dy}).catch(function(){
+        try{ window.location.href='via-drag://'+dx.toFixed(1)+','+dy.toFixed(1); }catch(e){}
+      });
       startX=e.clientX;startY=e.clientY;
     }
   });

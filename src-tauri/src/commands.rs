@@ -544,7 +544,7 @@ pub fn get_browser_state(
     let labels: Vec<String> = tabs.values().cloned().collect();
 
     let mut details = Vec::new();
-    for (id, label) in tabs.iter() {
+    for (_id, label) in tabs.iter() {
         let wv_exists = app.get_webview(label).is_some();
         let url = if wv_exists {
             app.get_webview(label).and_then(|wv| wv.url().ok()).map(|u| u.to_string()).unwrap_or_default()

@@ -19,6 +19,7 @@ pub struct NavOverlay {
 pub struct ShellState {
     pub overlay: Mutex<Option<NavOverlay>>,
     pub overlay_ready: Mutex<bool>,
+    pub overlay_creating: Mutex<bool>,
     pub menu_overlay: Mutex<Option<NavOverlay>>,
     pub menu_open: Mutex<bool>,
 }
@@ -28,6 +29,7 @@ impl Default for ShellState {
         Self {
             overlay: Mutex::new(None),
             overlay_ready: Mutex::new(false),
+            overlay_creating: Mutex::new(false),
             menu_overlay: Mutex::new(None),
             menu_open: Mutex::new(false),
         }
@@ -42,8 +44,31 @@ const MENU_WIDTH: f64 = 340.0;
 
 /// Create the native floating navigation overlay.
 /// This overlay is a transparent child WebView that sits ABOVE all browsing WebViews.
+/// RACE-SAFE: Uses overlay_creating guard to prevent concurrent add_child calls
+/// which cause WebView2 deadlocks on Windows.
 pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[SHELL] Creating navigation overlay");
+    diag_log("[SHELL] create_nav_overlay called");
+
+    let state = app.state::<ShellState>();
+
+    // Already created? Return immediately.
+    if *state.overlay_ready.lock().unwrap() {
+        diag_log("[SHELL] overlay already ready, skipping");
+        return Ok(());
+    }
+
+    // Another thread is currently creating it? Return immediately.
+    // The first thread will finish and set overlay_ready=true.
+    {
+        let mut creating = state.overlay_creating.lock().unwrap();
+        if *creating {
+            diag_log("[SHELL] overlay already being created by another thread, skipping");
+            return Ok(());
+        }
+        *creating = true;
+    }
+
+    diag_log("[SHELL] Creating navigation overlay — starting add_child");
 
     let window = app.get_window("main")
         .ok_or("main window not found")?;
@@ -67,27 +92,28 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
     let webview = window.add_child(builder, tauri::Position::Logical(position), tauri::Size::Logical(size))
         .map_err(|e| {
             diag_log(&format!("[SHELL] overlay create FAILED: {}", e));
+            // Clear creating guard so future attempts can retry
+            *state.overlay_creating.lock().unwrap() = false;
             e.to_string()
         })?;
 
-    diag_log("[SHELL] overlay CREATED");
+    diag_log("[SHELL] overlay CREATED via add_child");
     diag_log(&format!("[SHELL] overlay_position x={} y={} w={} h={}", x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT));
 
-    let state = app.state::<ShellState>();
     *state.overlay.lock().unwrap() = Some(NavOverlay {
         label: OVERLAY_LABEL.to_string(),
         x, y,
         width: OVERLAY_WIDTH,
         height: OVERLAY_HEIGHT,
     });
+    // Clear creating flag BEFORE setting ready, so any waiting thread sees ready=true
+    *state.overlay_creating.lock().unwrap() = false;
     *state.overlay_ready.lock().unwrap() = true;
 
-    // Ensure overlay is always visible and on top
+    // Show overlay but do NOT call set_focus() — it steals keyboard focus from the browsing WebView
     let _ = webview.show();
-    let _ = webview.set_focus();
 
-    diag_log("[SHELL] overlay z-order=above-webview");
-    diag_log("[SHELL] ready");
+    diag_log("[SHELL] overlay z-order=above-webview — READY");
 
     Ok(())
 }
@@ -122,19 +148,24 @@ pub fn move_overlay(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String
 }
 
 /// Ensure the overlay stays above all other webviews after a tab switch or navigation.
-/// Re-creates it if it was dropped.
+/// If overlay doesn't exist yet, spawns background creation — NEVER blocks the caller.
 pub fn ensure_overlay_above(app: &tauri::AppHandle) {
     let state = app.state::<ShellState>();
     let ready = *state.overlay_ready.lock().unwrap();
     if !ready {
-        let _ = create_nav_overlay(app);
+        diag_log("[SHELL] ensure_overlay_above: not ready, spawning creation thread");
+        // Spawn in background so we NEVER block show_tab/select_tab
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            let _ = create_nav_overlay(&app2);
+        });
         return;
     }
     let label = state.overlay.lock().unwrap().as_ref().map(|ov| ov.label.clone());
     if let Some(label) = label {
         if let Some(wv) = app.get_webview(&label) {
             let _ = wv.show();
-            // NOTE: do NOT set_focus() here — it steals keyboard focus from the browsing WebView
+            // NOTE: do NOT set_focus() — it steals keyboard focus from the browsing WebView
         }
     }
 }

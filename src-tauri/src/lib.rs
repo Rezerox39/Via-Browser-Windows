@@ -49,10 +49,12 @@ pub fn run() {
                 });
             }
 
-            // Create the navigation overlay after a short delay to let the window render
+            // Create the navigation overlay after a short delay to let the window render.
+            // The 1-second delay ensures show_tab (which spawns its own creation)
+            // runs FIRST and finishes, so this is only a fallback.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::thread::sleep(std::time::Duration::from_millis(1500));
                 let _ = shell::create_nav_overlay(&handle);
             });
 

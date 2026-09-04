@@ -63,13 +63,38 @@ pub fn diag_log(msg: &str) {
 
 /// Startup diagnostic: write initial state to log.
 pub fn diag_boot() {
+    diag_log("═══════════════════════════════════════");
+    diag_log("  VIA BROWSER STARTUP DIAGNOSTIC");
+    diag_log("═══════════════════════════════════════");
     diag_log(&format!("BUILD_ID={}", DIAG_BUILD));
+    diag_log(&format!("OS={} ARCH={}", std::env::consts::OS, std::env::consts::ARCH));
     if let Ok(exe) = std::env::current_exe() {
         diag_log(&format!("EXE_PATH={}", exe.display()));
+        if let Some(dir) = exe.parent() {
+            diag_log(&format!("EXE_DIR={}", dir.display()));
+            // Check if key files exist
+            let checks = [
+                ("WebView2Loader.dll", dir.join("WebView2Loader.dll")),
+                ("via-browser-win.exe", exe),
+            ];
+            for (name, path) in &checks {
+                let exists = path.exists();
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                diag_log(&format!("FILE_CHECK {} exists={} size={}", name, exists, size));
+            }
+        }
     }
     diag_log(&format!("LOG_PATH={}", diag_log_path().display()));
-    diag_log(&format!("OS={}", std::env::consts::OS));
-    diag_log(&format!("ARCH={}", std::env::consts::ARCH));
+    diag_log(&format!("CWD={}", std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()));
+    diag_log(&format!("TEMP_DIR={}", std::env::temp_dir().display()));
+    // Check app config dir
+    if let Some(dir) = dirs::config_dir() {
+        diag_log(&format!("CONFIG_DIR={}", dir.display()));
+    }
+    if let Some(dir) = dirs::data_dir() {
+        diag_log(&format!("DATA_DIR={}", dir.display()));
+    }
+    diag_log("═══════════════════════════════════════");
 }
 
 #[derive(Clone, Serialize)]
@@ -861,6 +886,116 @@ pub fn address_bar_navigate(
         }
         None => Err("no active tab".into()),
     }
+}
+
+/// Diagnostic: test if tab creation works and return detailed result
+#[tauri::command]
+pub async fn diag_test_tab(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, BrowserState>,
+    sstate: tauri::State<'_, SettingsState>,
+) -> Result<String, String> {
+    diag_log("═══ DIAG_TEST_TAB START ═══");
+    let mut results = Vec::new();
+    
+    // Test 1: main window
+    match main_window(&app) {
+        Ok(w) => {
+            let size = w.inner_size().map(|s| format!("{}x{}", s.width, s.height)).unwrap_or_default();
+            results.push(format!("main_window=OK size={}", size));
+            diag_log(&format!("[DIAG] main_window OK size={}", size));
+        }
+        Err(e) => {
+            results.push(format!("main_window=FAIL: {}", e));
+            diag_log(&format!("[DIAG] main_window FAIL: {}", e));
+        }
+    }
+    
+    // Test 2: settings
+    {
+        let s = sstate.0.lock().unwrap();
+        results.push(format!("settings=OK engine={} ua_mode={}", s.search_engine, s.ua_mode));
+        diag_log(&format!("[DIAG] settings OK engine={} ua_mode={}", s.search_engine, s.ua_mode));
+    }
+    
+    // Test 3: browser state
+    {
+        let tabs = state.tabs.lock().unwrap();
+        let active = state.active.lock().unwrap();
+        let next = *state.next_id.lock().unwrap();
+        results.push(format!("browser_state=OK tabs={} active={:?} next_id={}", tabs.len(), *active, next));
+        diag_log(&format!("[DIAG] browser_state OK tabs={} active={:?}", tabs.len(), *active));
+    }
+    
+    // Test 4: create a test tab
+    diag_log("[DIAG] Creating test tab...");
+    let test_url = Some("https://www.google.com".to_string());
+    match create_tab(app.clone(), state.clone(), sstate.clone(), test_url).await {
+        Ok(info) => {
+            results.push(format!("create_tab=OK id={} url={}", info.id, info.url));
+            diag_log(&format!("[DIAG] create_tab OK id={} url={}", info.id, info.url));
+            
+            // Test 5: check if webview exists
+            let label = format!("tab-{}", info.id);
+            match app.get_webview(&label) {
+                Some(wv) => {
+                    let wv_url = wv.url().map(|u| u.to_string()).unwrap_or_default();
+                    results.push(format!("webview_exists=OK label={} url={}", label, wv_url));
+                    diag_log(&format!("[DIAG] webview_exists OK label={} url={}", label, wv_url));
+                    
+                    // Test 6: try to navigate
+                    diag_log("[DIAG] Testing navigation...");
+                    match wv.navigate(Url::parse("https://www.google.com").unwrap()) {
+                        Ok(()) => {
+                            results.push("navigate=OK".to_string());
+                            diag_log("[DIAG] navigate OK");
+                        }
+                        Err(e) => {
+                            results.push(format!("navigate=FAIL: {}", e));
+                            diag_log(&format!("[DIAG] navigate FAIL: {}", e));
+                        }
+                    }
+                    
+                    // Test 7: try eval
+                    diag_log("[DIAG] Testing eval...");
+                    match wv.eval("window.__via_diag = 'test_ok'") {
+                        Ok(()) => {
+                            results.push("eval=OK".to_string());
+                            diag_log("[DIAG] eval OK");
+                        }
+                        Err(e) => {
+                            results.push(format!("eval=FAIL: {}", e));
+                            diag_log(&format!("[DIAG] eval FAIL: {}", e));
+                        }
+                    }
+                    
+                    // Clean up: close test tab
+                    let _ = wv.close();
+                    state.tabs.lock().unwrap().remove(&info.id);
+                    diag_log("[DIAG] test tab cleaned up");
+                }
+                None => {
+                    results.push(format!("webview_exists=FAIL: label '{}' not found", label));
+                    diag_log(&format!("[DIAG] webview_exists FAIL: label '{}' not found", label));
+                }
+            }
+        }
+        Err(e) => {
+            results.push(format!("create_tab=FAIL: {}", e));
+            diag_log(&format!("[DIAG] create_tab FAIL: {}", e));
+        }
+    }
+    
+    // Test 8: overlay state
+    let shell = app.state::<crate::shell::ShellState>();
+    let overlay = shell.overlay.lock().unwrap();
+    let overlay_ready = *shell.overlay_ready.lock().unwrap();
+    results.push(format!("overlay=ready={} label={}", overlay_ready, overlay.as_ref().map(|o| o.label.as_str()).unwrap_or("none")));
+    diag_log(&format!("[DIAG] overlay ready={} label={}", overlay_ready, overlay.as_ref().map(|o| o.label.as_str()).unwrap_or("none")));
+    drop(overlay);
+    
+    diag_log("═══ DIAG_TEST_TAB END ═══");
+    Ok(results.join("\n"))
 }
 
 // ---------- URL normalization ----------

@@ -161,22 +161,39 @@ async function switchTab(id: number) {
 }
 
 async function openUrl(url: string): Promise<void> {
-  debugLog(`[NAV] openUrl url="${url}" activeId=${activeId}`);
+  debugLog(`[NAV] openUrl url="${url}" activeId=${activeId} defaultTabId=${defaultTabId} tabs=${tabs.length}`);
+  
   if (activeId && activeId > 0) {
     const tab = tabs.find(t => t.id === activeId);
     if (tab) tab.url = url;
-    await invoke("navigate_tab", { id: activeId, url }).catch(e => debugLog(`[NAV] ERR: ${e}`));
+    debugLog(`[NAV] navigate_tab id=${activeId} url="${url}"`);
+    const startTime = Date.now();
+    try {
+      await invoke("navigate_tab", { id: activeId, url });
+      debugLog(`[NAV] navigate_tab OK in ${Date.now() - startTime}ms`);
+    } catch (e) {
+      debugLog(`[NAV] navigate_tab FAIL in ${Date.now() - startTime}ms: ${e}`);
+      throw e;
+    }
     showOnlyWebview(activeId);
     invoke("add_history", { url, title: url }).catch(() => {});
   } else if (defaultTabId) {
     const tab = tabs.find(t => t.id === defaultTabId);
     if (tab) { tab.url = url; tab.title = url; }
     activeId = defaultTabId;
-    await invoke("navigate_tab", { id: defaultTabId, url }).catch(e => debugLog(`[NAV] ERR: ${e}`));
+    debugLog(`[NAV] navigate_tab (default) id=${defaultTabId} url="${url}"`);
+    try {
+      await invoke("navigate_tab", { id: defaultTabId, url });
+      debugLog(`[NAV] navigate_tab (default) OK`);
+    } catch (e) {
+      debugLog(`[NAV] navigate_tab (default) FAIL: ${e}`);
+      throw e;
+    }
     showOnlyWebview(defaultTabId);
     invoke("add_history", { url, title: url }).catch(() => {});
     updateTabCount();
   } else {
+    debugLog(`[NAV] No active tab or defaultTabId — creating new tab for url="${url}"`);
     await createTab(url);
     invoke("add_history", { url, title: url }).catch(() => {});
   }
@@ -212,13 +229,20 @@ function handleSearch() {
   const val = input.value.trim();
   if (!val) return;
   input.value = "";
-  debugLog(`[SEARCH] query="${val}"`);
+  debugLog(`[SEARCH] query="${val}" activeId=${activeId} tabs=${tabs.length}`);
   let url: string;
   if (/^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val) || (val.includes('.') && !val.includes(' ')))
     url = /^https?:\/\//i.test(val) || /^localhost/i.test(val) || /^\d{1,3}(\.\d{1,3}){3}/.test(val) ? val : "https://" + val;
   else
     url = (ENGINES[searchEngine] || ENGINES.Google) + encodeURIComponent(val);
-  openUrl(url).catch(e => showToast("Nav failed: " + String(e).slice(0, 60)));
+  debugLog(`[SEARCH] resolved_url="${url}"`);
+  openUrl(url).then(() => {
+    debugLog(`[SEARCH] openUrl OK`);
+    $("home").classList.add("hidden");
+  }).catch(e => {
+    debugLog(`[SEARCH] openUrl FAIL: ${e}`);
+    showToast("Nav failed: " + String(e).slice(0, 100));
+  });
 }
 
 /* ═══════ SIDE MENU ═══════ */
@@ -537,94 +561,131 @@ function renderBlocklist(b: HTMLElement) {
 
 /* ═══════ BOOT ═══════ */
 async function boot() {
-  debugLog("[BOOT] Starting build=" + BUILD_ID);
-
-  settings = await invoke<Settings>("get_settings").catch(() => null);
+  const DIAG: string[] = [];
+  const dlog = (msg: string) => { DIAG.push(msg); debugLog(msg); };
+  
+  dlog("═══════════════════════════════════════");
+  dlog("  JS BOOT DIAGNOSTIC START");
+  dlog("═══════════════════════════════════════");
+  dlog(`BUILD=${BUILD_ID}`);
+  dlog(`UA=${navigator.userAgent}`);
+  dlog(`screen=${screen.width}x${screen.height}`);
+  dlog(`window=${window.innerWidth}x${window.innerHeight}`);
+  dlog(`__TAURI__=${typeof (window as any).__TAURI__}`);
+  
+  // Step 1: Load settings
+  dlog("[STEP 1] Loading settings...");
+  settings = await invoke<Settings>("get_settings").catch(e => { dlog(`[STEP 1] FAIL: ${e}`); return null; });
   if (settings) {
     searchEngine = settings.search_engine || "Google";
     nightMode = settings.night_mode; desktopMode = settings.desktop_mode;
     textSize = settings.text_size || 1; showImages = settings.show_images !== false;
     adblockOn = settings.adblock_enabled !== false; restoreTabs = settings.restore_tabs || false;
+    dlog(`[STEP 1] OK engine=${searchEngine} ua=${settings.ua_mode} adblock=${adblockOn}`);
     try { localStorage.setItem('via-settings', JSON.stringify({ search_engine: searchEngine })); } catch {}
+  } else {
+    dlog("[STEP 1] WARN: settings=null, using defaults");
   }
-  bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(() => []);
-  historyItems = await invoke<HistItem[]>("list_history", { q: null }).catch(() => []);
-  downloads = await invoke<DlItem[]>("list_downloads").catch(() => []);
+  
+  // Step 2: Load data
+  dlog("[STEP 2] Loading bookmarks/history/downloads...");
+  bookmarks = await invoke<Bookmark[]>("list_bookmarks").catch(e => { dlog(`[STEP 2] bookmarks FAIL: ${e}`); return []; });
+  historyItems = await invoke<HistItem[]>("list_history", { q: null }).catch(e => { dlog(`[STEP 2] history FAIL: ${e}`); return []; });
+  downloads = await invoke<DlItem[]>("list_downloads").catch(e => { dlog(`[STEP 2] downloads FAIL: ${e}`); return []; });
+  dlog(`[STEP 2] OK bookmarks=${bookmarks.length} history=${historyItems.length} downloads=${downloads.length}`);
 
+  // Step 3: Setup events and keyboard
+  dlog("[STEP 3] Setting up events and keyboard...");
   setupEvents();
   setupKeyboard();
+  dlog("[STEP 3] OK");
 
-  // Search bar (on main webview homepage)
+  // Step 4: Wire up homepage search
+  dlog("[STEP 4] Wiring homepage search...");
   $("home-search").addEventListener("click", e => { e.stopPropagation(); ($("home-input") as HTMLInputElement).focus(); });
   $("home-input").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); handleSearch(); } e.stopPropagation(); });
+  dlog("[STEP 4] OK");
 
-  // Menu / Panel
+  // Step 5: Wire up menu/panel
+  dlog("[STEP 5] Wiring menu/panel...");
   $("menu-backdrop").addEventListener("click", closeMenu);
   $("menu-exit").addEventListener("click", () => { closeMenu(); closePanel(); });
   $("menu-collapse").addEventListener("click", closeMenu);
   $("panel-back").addEventListener("click", closePanel);
   $("panel-backdrop").addEventListener("click", closePanel);
-
   window.addEventListener("beforeunload", () => saveSession());
+  dlog("[STEP 5] OK");
 
-  // Restore session or create default tab
-  let sessionRestored = false;
-  if (restoreTabs) {
+  // Step 6: Create default tab (the critical step)
+  dlog("[STEP 6] Creating default tab...");
+  const homeInput = $("home-input") as HTMLInputElement;
+  if (homeInput) homeInput.placeholder = "Creating browser…";
+  
+  try {
+    dlog("[STEP 6] Calling invoke('create_tab', {url: null})...");
+    const startTime = Date.now();
+    const info = await invoke<TabInfo>("create_tab", { url: null });
+    const elapsed = Date.now() - startTime;
+    dlog(`[STEP 6] create_tab OK id=${info.id} url="${info.url}" title="${info.title}" in ${elapsed}ms`);
+    
+    const tab: Tab = { id: info.id, url: "", title: "New Tab", active: true };
+    tabs.push(tab);
+    activeId = info.id;
+    defaultTabId = info.id;
+    dlog(`[STEP 6] Tab created: id=${tab.id} activeId=${activeId} defaultTabId=${defaultTabId}`);
+    
+    // Step 7: Show the tab's webview
+    dlog("[STEP 7] Showing webview...");
     try {
-      const saved = await invoke<SessionEntry[]>("restore_session");
-      if (saved && saved.length > 0) {
-        debugLog(`[BOOT] Restoring ${saved.length} tabs from session`);
-        for (const entry of saved) {
-          const url = entry.url && entry.url !== "about:blank" ? entry.url : undefined;
-          const info = await invoke<TabInfo>("create_tab", { url: url || null });
-          const tab: Tab = { id: info.id, url: url || "", title: entry.title || "New Tab", active: false };
-          tabs.push(tab);
-        }
-        // Activate the tab that was active
-        const activeEntry = saved.find(s => s.active) || saved[0];
-        const activeTab = tabs.find(t => t.url === activeEntry.url) || tabs[0];
-        if (activeTab) {
-          activeId = activeTab.id;
-          await invoke("show_tab", { id: activeTab.id });
-          showOnlyWebview(activeTab.id);
-        }
-        defaultTabId = tabs[0].id;
-        sessionRestored = true;
-        updateTabCount();
-        $("home").classList.add("hidden");
-        debugLog(`[BOOT] Session restored: ${tabs.length} tabs, active=${activeId}`);
-      }
+      await invoke("show_tab", { id: info.id });
+      dlog(`[STEP 7] show_tab OK`);
     } catch (e) {
-      debugLog(`[BOOT] Session restore failed: ${e}`);
+      dlog(`[STEP 7] show_tab FAIL: ${e}`);
     }
-  }
-  if (!sessionRestored) {
-    debugLog("[BOOT] Creating default tab");
+    
+    // Step 8: Hide homepage
+    dlog("[STEP 8] Hiding homepage...");
+    $("home").classList.add("hidden");
+    const homeHidden = $("home").classList.contains("hidden");
+    dlog(`[STEP 8] homepage hidden=${homeHidden}`);
+    
+    // Step 9: Update tab count
+    updateTabCount();
+    dlog("[STEP 9] updateTabCount OK");
+    
+    // Step 10: Run full diagnostic test
+    dlog("[STEP 10] Running diag_test_tab...");
     try {
-      // Show loading state on homepage
-      const homeInput = $("home-input") as HTMLInputElement;
-      if (homeInput) homeInput.placeholder = "Loading browser…";
-      
-      const info = await invoke<TabInfo>("create_tab", { url: null });
-      debugLog(`[BOOT] Default tab id=${info.id} label=tab-${info.id}`);
-      
-      const tab: Tab = { id: info.id, url: "", title: "New Tab", active: true };
-      tabs.push(tab);
-      activeId = info.id;
-      defaultTabId = info.id;
-      showOnlyWebview(info.id);
-      updateTabCount();
-      $("home").classList.add("hidden");
-      debugLog(`[BOOT] Done tabs=${tabs.length} active=${activeId}`);
+      const diagResult = await invoke<string>("diag_test_tab");
+      dlog(`[STEP 10] diag_test_tab result:\n${diagResult}`);
     } catch (e) {
-      debugLog(`[BOOT] create_tab FAILED: ${e}`);
-      showToast("Failed to create browser tab: " + String(e).slice(0, 80));
-      // Keep homepage visible as fallback — user can search from here
-      $("home").classList.remove("hidden");
-      const homeInput = $("home-input") as HTMLInputElement;
-      if (homeInput) homeInput.placeholder = "Search or enter URL";
+      dlog(`[STEP 10] diag_test_tab FAIL: ${e}`);
     }
+    
+    dlog("═══════════════════════════════════════");
+    dlog("  JS BOOT COMPLETE - ALL STEPS OK");
+    dlog("═══════════════════════════════════════");
+    
+  } catch (e) {
+    const err = String(e);
+    dlog(`[STEP 6] create_tab FAILED: ${err}`);
+    dlog("═══════════════════════════════════════");
+    dlog("  JS BOOT FAILED AT STEP 6");
+    dlog("═══════════════════════════════════════");
+    
+    // Show error on homepage so user can see what happened
+    $("home").classList.remove("hidden");
+    if (homeInput) {
+      homeInput.placeholder = "Error creating tab — check via-debug.log";
+      homeInput.value = "";
+    }
+    showToast("Browser tab creation failed: " + err.slice(0, 100));
   }
+  
+  // Write full diagnostic to log
+  try {
+    await invoke("log_to_file", { msg: `[JS_DIAG] ${DIAG.join(' | ')}` });
+  } catch {}
 }
 
 boot();

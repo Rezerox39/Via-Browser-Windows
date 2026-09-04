@@ -60,18 +60,28 @@ html,body{
 (function(){
   var pill=document.getElementById('nav-pill');
 
+  /* IPC: try all known Tauri bridges */
+  function hasIPC(){
+    try{
+      if(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) return 'api';
+      if(window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) return 'internals';
+    }catch(e){}
+    return null;
+  }
+  function callRust(cmd, args){
+    var mode=hasIPC();
+    if(mode==='api') return window.__TAURI__.core.invoke(cmd, args||{});
+    if(mode==='internals') return window.__TAURI_INTERNALS__.invoke(cmd, args||{}, undefined);
+    return Promise.reject(new Error('no-ipc'));
+  }
+  /* Report which IPC mode is available (visible in via-debug.log via title change) */
+  try{ document.title='VIA-OVL:'+encodeURIComponent('ipc='+(hasIPC()||'none'))+'/'+Date.now(); }catch(e){}
+
   function fireCommand(action){
-    // Primary: use Tauri IPC if available
-    try{
-      if(window.__TAURI__ && window.__TAURI__.core){
-        window.__TAURI__.core.invoke('on_nav_click',{action:action});
-        return;
-      }
-    }catch(e){}
-    // Fallback: navigate to via-action:// URL, intercepted by on_navigation in Rust
-    try{
-      window.location.href='via-action://'+action;
-    }catch(e){}
+    callRust('on_nav_click',{action:action}).then(function(){}).catch(function(){
+      /* Fallback: navigate to custom scheme, intercepted by Rust on_navigation */
+      try{ window.location.href='via-action://'+action; }catch(e){}
+    });
   }
 
   document.getElementById('btn-back').addEventListener('click',function(e){e.stopPropagation();fireCommand('back')});
@@ -80,10 +90,10 @@ html,body{
   document.getElementById('btn-tabs').addEventListener('click',function(e){e.stopPropagation();fireCommand('tabs')});
   document.getElementById('btn-menu').addEventListener('click',function(e){e.stopPropagation();fireCommand('menu')});
 
-  /* Tab count updates from main window via eval */
+  /* Tab count updates pushed from Rust via eval */
   window.__updateTabCount=function(n){var e=document.getElementById('tab-count');if(e)e.textContent=n};
 
-  /* 2D Dragging — grab from background area only */
+  /* 2D Dragging — grab from panel background, not buttons */
   var dragging=false,startX=0,startY=0,hasMoved=false,THRESHOLD=6;
   pill.addEventListener('mousedown',function(e){
     if(e.target.closest('button'))return;
@@ -96,11 +106,7 @@ html,body{
     var dx=e.clientX-startX, dy=e.clientY-startY;
     if(!hasMoved && (Math.abs(dx)>THRESHOLD || Math.abs(dy)>THRESHOLD)) hasMoved=true;
     if(hasMoved){
-      try{
-        if(window.__TAURI__ && window.__TAURI__.core){
-          window.__TAURI__.core.invoke('on_nav_drag',{dx:dx,dy:dy});
-        }
-      }catch(ex){}
+      callRust('on_nav_drag',{dx:dx,dy:dy}).catch(function(){});
       startX=e.clientX;startY=e.clientY;
     }
   });

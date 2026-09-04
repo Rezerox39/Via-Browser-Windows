@@ -86,8 +86,26 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
     let size = tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
 
     // Create transparent WebView for the nav overlay
+    let overlay_app = app.clone();
     let builder = WebviewBuilder::new(OVERLAY_LABEL, WebviewUrl::App("nav-overlay.html".into()))
-        .transparent(true);
+        .transparent(true)
+        .on_navigation(move |url| {
+            // Intercept via-action:// commands from the overlay (fallback when IPC unavailable)
+            if url.scheme() == "via-action" {
+                let action = url.host_str().unwrap_or("").to_string();
+                diag_log(&format!("[NAV-OVERLAY] via-action url={} action={}", url, action));
+                match action.as_str() {
+                    "back" => { let _ = nav_back(&overlay_app); }
+                    "forward" => { let _ = nav_forward(&overlay_app); }
+                    "home" => { let _ = nav_home(&overlay_app); }
+                    "tabs" => { let _ = nav_tabs(&overlay_app); }
+                    "menu" => { let _ = nav_menu(&overlay_app); }
+                    _ => diag_log(&format!("[NAV-OVERLAY] unknown via-action: {}", action)),
+                }
+                return false;
+            }
+            true
+        });
 
     let webview = window.add_child(builder, tauri::Position::Logical(position), tauri::Size::Logical(size))
         .map_err(|e| {

@@ -448,7 +448,11 @@ pub fn refresh_tabs_overlay(app: &tauri::AppHandle) {
 // ═══════ Navigation overlay (the pill bar) ═══════
 
 pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[SHELL] create_nav_overlay called");
+    create_nav_overlay_labeled(app, OVERLAY_LABEL)
+}
+
+fn create_nav_overlay_labeled(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+    diag_log(&format!("[SHELL] create_nav_overlay_labeled label={}", label));
 
     let state = app.state::<ShellState>();
 
@@ -493,7 +497,7 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
     let size = tauri::LogicalSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
 
     let overlay_app = app.clone();
-    let builder = WebviewBuilder::new(OVERLAY_LABEL, WebviewUrl::App("nav-overlay.html".into()))
+    let builder = WebviewBuilder::new(label, WebviewUrl::App("nav-overlay.html".into()))
         .transparent(true)
         .on_navigation(move |url| {
             if url.scheme() == "via-action" {
@@ -541,7 +545,7 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
     diag_log(&format!("[SHELL] overlay_position x={} y={} w={} h={}", x, y, OVERLAY_WIDTH, OVERLAY_HEIGHT));
 
     *state.overlay.lock().unwrap() = Some(NavOverlay {
-        label: OVERLAY_LABEL.to_string(),
+        label: label.to_string(),
         x, y,
         width: OVERLAY_WIDTH,
         height: OVERLAY_HEIGHT,
@@ -557,30 +561,32 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
 
 /// Destroy the current nav overlay and recreate it.
 /// This puts it at the top of the z-order (last child wins in WebView2).
+static OVERLAY_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 pub fn recreate_nav_overlay(app: &tauri::AppHandle) {
     let state = app.state::<ShellState>();
-    // Destroy old overlay
-    let old_label = {
+
+    // Step 1: Hide and close the old overlay webview to free the HWND,
+    //         then clear state so create_nav_overlay can proceed.
+    {
         let mut overlay = state.overlay.lock().unwrap();
-        let lbl = overlay.as_ref().map(|ov| ov.label.clone());
-        *overlay = None;
-        lbl
-    };
+        if let Some(ov) = overlay.take() {
+            if let Some(wv) = app.get_webview(&ov.label) {
+                let _ = wv.hide();
+                let _ = wv.close();
+            }
+            diag_log(&format!("[SHELL] recreate: closed old overlay label={}", ov.label));
+        }
+    }
     *state.overlay_ready.lock().unwrap() = false;
     *state.overlay_creating.lock().unwrap() = false;
 
-    if let Some(label) = old_label {
-        if let Some(wv) = app.get_webview(&label) {
-            let _ = wv.hide();
-            // WebView2: dropping the handle should destroy the webview
-        }
-        // The webview is hidden; it will be garbage collected when the handle drops
-        diag_log(&format!("[SHELL] old nav overlay hidden for replacement"));
-        diag_log(&format!("[SHELL] nav overlay destroyed label={}", label));
-    }
+    // Step 2: Use a unique label so we never collide with a still-dying HWND.
+    let seq = OVERLAY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let unique_label = format!("{}-{}", OVERLAY_LABEL, seq);
+    diag_log(&format!("[SHELL] recreate: creating overlay label={}", unique_label));
 
-    // Recreate
-    let _ = create_nav_overlay(app);
+    let _ = create_nav_overlay_labeled(app, &unique_label);
 }
 
 pub fn begin_overlay_drag(app: &tauri::AppHandle) {

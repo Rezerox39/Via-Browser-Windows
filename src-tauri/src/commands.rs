@@ -761,7 +761,7 @@ pub fn select_tab(
                 }
             }
             *state.active.lock().unwrap() = Some(id);
-            crate::shell::recreate_nav_overlay(&app);
+            crate::shell::ensure_overlay_above(&app);
             diag_log(&format!("[SELECT_TAB] END active={}", id));
             return Ok(TabInfo { id, url, title: String::new(), loading: false, active: true });
         }
@@ -789,9 +789,6 @@ pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
 pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
     let label = format!("tab-{}", id);
     diag_log(&format!("[SHOW_TAB] id={} label={}", id, label));
-    // Hide nav overlay first so the tab webview shows on top of it,
-    // then recreate the overlay (puts it at the top of the z-order).
-    crate::shell::hide_nav_overlay_if_ready(&app);
     if let Some(wv) = app.get_webview(&label) {
         if let Some(bounds) = tab_bounds(&app) {
             let _ = wv.set_bounds(bounds);
@@ -805,7 +802,8 @@ pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
     } else {
         diag_log("[SHOW_TAB] webview_NOT_FOUND");
     }
-    crate::shell::recreate_nav_overlay(&app);
+    // Ensure overlay is visible (no recreate — z-order is set at create_tab time)
+    crate::shell::ensure_overlay_above(&app);
     Ok(())
 }
 

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  width:100%;height:100%;overflow:hidden;
+  background:transparent;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+  font-size:13px;
+  user-select:none;-webkit-user-select:none;
+  color:#e0e0e0;
+}
+#backdrop{
+  position:absolute;top:0;left:0;right:0;bottom:0;
+  background:rgba(0,0,0,0.55);
+  cursor:pointer;
+}
+#tabs-panel{
+  position:absolute;top:10%;left:50%;transform:translateX(-50%);
+  width:560px;max-width:90vw;max-height:72vh;
+  background:rgba(16,16,16,0.98);
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:20px;
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  box-shadow:0 20px 60px rgba(0,0,0,0.6);
+  animation:popIn 0.22s ease-out;
+}
+@keyframes popIn{from{opacity:0;transform:translateX(-50%) scale(0.96)}to{opacity:1;transform:translateX(-50%) scale(1)}}
+#tabs-head{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 18px 12px;
+  border-bottom:1px solid rgba(255,255,255,0.06);
+}
+#tabs-head b{font-size:15px;color:#fff}
+#btn-new{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(255,255,255,0.08);border:none;color:#fff;
+  padding:7px 14px;border-radius:10px;cursor:pointer;font-size:12px;
+}
+#btn-new:hover{background:rgba(255,255,255,0.15)}
+#tabs-list{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.tab-item{
+  display:flex;align-items:center;gap:10px;
+  padding:10px 12px;border-radius:12px;cursor:pointer;
+  border:1px solid transparent;
+}
+.tab-item:hover{background:rgba(255,255,255,0.06)}
+.tab-item.active{background:rgba(90,131,255,0.14);border-color:rgba(90,131,255,0.4)}
+.tab-item .ti-icon{width:14px;height:14px;flex:none;color:#5a83ff}
+.tab-item.active .ti-icon{color:#5a83ff}
+.tab-item .ti-info{flex:1;min-width:0}
+.tab-item .ti-title{font-size:13px;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab-item .ti-sub{font-size:11px;color:#777;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab-item .btn-x{
+  flex:none;width:26px;height:26px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;
+  background:none;border:none;color:#888;cursor:pointer;font-size:14px;
+}
+.tab-item .btn-x:hover{background:rgba(255,80,80,0.2);color:#ff6b6b}
+#tabs-empty{padding:40px 20px;text-align:center;color:#777}
+</style>
+</head>
+<body>
+<div id="backdrop"></div>
+<div id="tabs-panel">
+  <div id="tabs-head">
+    <b>Tabs</b>
+    <button id="btn-new">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      New Tab
+    </button>
+  </div>
+  <div id="tabs-list"></div>
+</div>
+<script>
+(function(){
+  var list=document.getElementById('tabs-list');
+  var backdrop=document.getElementById('backdrop');
+
+  function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+
+  window.__renderTabs=function(data){
+    var tabs=data.tabs||[], active=data.active||null;
+    if(!tabs.length){
+      list.innerHTML='<div id="tabs-empty">No tabs open</div>';
+      return;
+    }
+    list.innerHTML='';
+    tabs.forEach(function(t){
+      var el=document.createElement('div');
+      el.className='tab-item'+(t.id===active?' active':'');
+      el.innerHTML=
+        '<svg class="ti-icon" viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="3" y="4" width="18" height="16" rx="2"/></svg>'+
+        '<div class="ti-info"><div class="ti-title">'+esc(t.title||'New Tab')+'</div>'+
+        '<div class="ti-sub">'+esc(t.url||'')+'</div></div>'+
+        '<button class="btn-x" title="Close">✕</button>';
+      el.addEventListener('click',function(e){
+        if(e.target.closest('.btn-x'))return;
+        window.location.href='via-action://tab-switch:'+t.id;
+      });
+      el.querySelector('.btn-x').addEventListener('click',function(e){
+        e.stopPropagation();
+        window.location.href='via-action://tab-close:'+t.id;
+      });
+      list.appendChild(el);
+    });
+  };
+
+  backdrop.addEventListener('click',function(){ window.location.href='via-action://close-tabs'; });
+  document.getElementById('btn-new').addEventListener('click',function(){ window.location.href='via-action://tab-new'; });
+
+})();
+</script>
+</body>
+</html>

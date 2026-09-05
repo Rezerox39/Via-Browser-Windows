@@ -83,6 +83,7 @@ pub fn run() {
             // nav overlay commands
             commands::on_nav_click,
             commands::on_nav_drag,
+            commands::on_nav_drag_abs,
             commands::address_bar_navigate,
             commands::set_tabs_visible,
             commands::update_overlay_tab_count_cmd,

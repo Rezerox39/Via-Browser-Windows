@@ -564,6 +564,10 @@ pub async fn create_tab(
     diag_log("[TAB_CREATE] END");
     diag_log("========================================");
 
+    // A new tab webview is now a sibling that may render above the nav overlay.
+    // Recreate the nav overlay so it's back at the top of the z-order.
+    crate::shell::recreate_nav_overlay(&app);
+
     Ok(TabInfo {
         id,
         url: target,
@@ -609,6 +613,54 @@ pub fn get_browser_state(
         next_id: next,
         webview_details: details,
     }
+}
+
+// ═══════ Helper functions (called from shell.rs) ═══════
+
+/// Close a tab by id — accessible from shell.rs without Tauri State dependency.
+pub fn close_tab_native(app: &tauri::AppHandle, id: u32) -> Result<(), String> {
+    let browser = app.state::<BrowserState>();
+    diag_log(&format!("[CLOSE_TAB] BEGIN id={}", id));
+    let label = browser.tabs.lock().unwrap().remove(&id);
+    if let Some(label) = label {
+        diag_log(&format!("[CLOSE_TAB] found_label={}", label));
+        if let Some(wv) = app.get_webview(&label) {
+            let _ = wv.close();
+            diag_log("[CLOSE_TAB] webview.closed()");
+        }
+    }
+    if *browser.active.lock().unwrap() == Some(id) {
+        *browser.active.lock().unwrap() = None;
+        diag_log("[CLOSE_TAB] cleared_active");
+    }
+    let final_count = browser.tabs.lock().unwrap().len();
+    diag_log(&format!("[CLOSE_TAB] END remaining_tabs={}", final_count));
+    Ok(())
+}
+
+/// Select a tab by id — accessible from shell.rs without Tauri State dependency.
+pub fn select_tab_native(app: &tauri::AppHandle, id: u32) -> Result<(), String> {
+    let browser = app.state::<BrowserState>();
+    let label = browser.tabs.lock().unwrap().get(&id).cloned();
+    let Some(label) = label else { return Err("tab not found".into()) };
+    let Some(wv) = app.get_webview(&label) else { return Err("webview not found".into()) };
+    if let Some(bounds) = tab_bounds(app) {
+        let _ = wv.set_bounds(bounds);
+    }
+    let _ = wv.show();
+    let _ = wv.set_focus();
+    let url = wv.url().map(|u| u.to_string()).unwrap_or_default();
+    crate::shell::update_overlay_url(app, &url);
+    for (_, other) in browser.tabs.lock().unwrap().iter() {
+        if other != &label {
+            if let Some(o) = app.get_webview(other) {
+                let _ = o.hide();
+            }
+        }
+    }
+    *browser.active.lock().unwrap() = Some(id);
+    diag_log(&format!("[SELECT_TAB] END active={}", id));
+    Ok(())
 }
 
 #[tauri::command]
@@ -709,7 +761,7 @@ pub fn select_tab(
                 }
             }
             *state.active.lock().unwrap() = Some(id);
-            crate::shell::ensure_overlay_above(&app);
+            crate::shell::recreate_nav_overlay(&app);
             diag_log(&format!("[SELECT_TAB] END active={}", id));
             return Ok(TabInfo { id, url, title: String::new(), loading: false, active: true });
         }
@@ -737,6 +789,9 @@ pub fn hide_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
 pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
     let label = format!("tab-{}", id);
     diag_log(&format!("[SHOW_TAB] id={} label={}", id, label));
+    // Hide nav overlay first so the tab webview shows on top of it,
+    // then recreate the overlay (puts it at the top of the z-order).
+    crate::shell::hide_nav_overlay_if_ready(&app);
     if let Some(wv) = app.get_webview(&label) {
         if let Some(bounds) = tab_bounds(&app) {
             let _ = wv.set_bounds(bounds);
@@ -744,15 +799,13 @@ pub fn show_tab(app: tauri::AppHandle, id: u32) -> Result<(), String> {
         let _ = wv.show();
         let _ = wv.set_focus();
         diag_log(&format!("[TAB-LIFECYCLE] VISIBLE id={}", id));
-        // Update overlay address bar with this tab's URL
         if let Ok(url) = wv.url() {
             crate::shell::update_overlay_url(&app, &url.to_string());
         }
-        // Ensure the navigation overlay stays above this webview
-        crate::shell::ensure_overlay_above(&app);
     } else {
         diag_log("[SHOW_TAB] webview_NOT_FOUND");
     }
+    crate::shell::recreate_nav_overlay(&app);
     Ok(())
 }
 
@@ -891,16 +944,36 @@ pub fn on_nav_drag(
 ) -> Result<(), String> {
     // NOTE: never hold the overlay lock while calling move_overlay — it locks
     // the same mutex and would deadlock (this was the drag freeze bug).
-    let target = {
-        let shell_state = app.state::<crate::shell::ShellState>();
-        let overlay = shell_state.overlay.lock().unwrap();
-        overlay.as_ref().map(|ov| (ov.x + dx, ov.y + dy))
-    };
-    let Some((tx, ty)) = target else { return Err("overlay not found".into()) };
-    // Window/webview mutations must run on the main thread.
     let app2 = app.clone();
     app.run_on_main_thread(move || {
-        let _ = crate::shell::move_overlay(&app2, tx, ty);
+        // Read position + apply delta + set_bounds all in one main-thread
+        // dispatch. This eliminates the jitter caused by reading stale
+        // overlay.x across async dispatches (the old code read outside the
+        // main-thread block, so multiple pending mouse events each saw the
+        // same stored x and accumulated offset).
+        let state = app2.state::<crate::shell::ShellState>();
+        let target = {
+            let overlay = state.overlay.lock().unwrap();
+            overlay.as_ref().map(|ov| (ov.x + dx, ov.y + dy))
+        };
+        if let Some((tx, ty)) = target {
+            let _ = crate::shell::move_overlay(&app2, tx, ty);
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Handle absolute-position drag — the JS overlay sends its target (x,y)
+/// and Rust moves the overlay there. No delta accumulation, no jitter.
+#[tauri::command]
+pub fn on_nav_drag_abs(
+    app: tauri::AppHandle,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = crate::shell::move_overlay(&app2, x, y);
     })
     .map_err(|e| e.to_string())
 }

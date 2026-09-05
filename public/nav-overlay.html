@@ -93,23 +93,39 @@ html,body{
   /* Tab count updates pushed from Rust via eval */
   window.__updateTabCount=function(n){var e=document.getElementById('tab-count');if(e)e.textContent=n};
 
-  /* 2D Dragging — grab from panel background, not buttons */
-  var dragging=false,startX=0,startY=0,hasMoved=false,THRESHOLD=6;
+  /* 2D Dragging — ABSOLUTE positioning (eliminates jitter).
+     On mousedown, we capture the current overlay position and mouse position.
+     On mousemove, we compute the absolute target and send it via via-drag://.
+     Rust receives absolute x,y — no stale-position accumulation possible. */
+  var dragging=false,dragStartX=0,dragStartY=0,dragStartOX=0,dragStartOY=0,hasMoved=false,THRESHOLD=6;
+  /* Overlay position in screen coords, synced from Rust after each move. */
+  var overlayX=0, overlayY=0;
+  function syncOverlayPos(x,y){ overlayX=x; overlayY=y; }
+  /* Expose to Rust: after move_overlay completes, Rust can eval this */
+  window.__syncOverlayPos=syncOverlayPos;
+
+  /* Request current position from Rust (best-effort at startup) */
+  try{ callRust('on_nav_drag',{dx:0,dy:0}).then(function(){}) }catch(e){}
+
   pill.addEventListener('mousedown',function(e){
     if(e.target.closest('button'))return;
     dragging=true;hasMoved=false;
-    startX=e.clientX;startY=e.clientY;
+    dragStartX=e.clientX; dragStartY=e.clientY;
+    dragStartOX=overlayX; dragStartOY=overlayY;
     e.preventDefault();
   });
   document.addEventListener('mousemove',function(e){
     if(!dragging)return;
-    var dx=e.clientX-startX, dy=e.clientY-startY;
+    var dx=e.clientX-dragStartX, dy=e.clientY-dragStartY;
     if(!hasMoved && (Math.abs(dx)>THRESHOLD || Math.abs(dy)>THRESHOLD)) hasMoved=true;
     if(hasMoved){
-      callRust('on_nav_drag',{dx:dx,dy:dy}).catch(function(){
-        try{ window.location.href='via-drag://'+dx.toFixed(1)+','+dy.toFixed(1); }catch(e){}
+      var targetX=dragStartOX+dx, targetY=dragStartOY+dy;
+      /* Primary: absolute-position IPC (no jitter). Fallback: via-drag scheme. */
+      callRust('on_nav_drag_abs',{x:targetX,y:targetY}).catch(function(){
+        try{ window.location.href='via-drag://'+targetX.toFixed(1)+','+targetY.toFixed(1); }catch(e){}
       });
-      startX=e.clientX;startY=e.clientY;
+      /* Optimistically update local position to reduce visual lag */
+      overlayX=targetX; overlayY=targetY;
     }
   });
   document.addEventListener('mouseup',function(){dragging=false});

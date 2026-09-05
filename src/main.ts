@@ -79,7 +79,7 @@ function showToast(msg: string) {
 }
 function fmtSize(b: number): string { return b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : b < 1073741824 ? (b / 1048576).toFixed(1) + " MB" : (b / 1073741824).toFixed(1) + " GB"; }
 function log(msg: string, ...args: any[]) { console.log("[Via]", msg, ...args); }
-const BUILD_ID = "BUILD_2026_09_02_SHELL";
+const BUILD_ID = "BUILD_2026_09_05_SHELL";
 function debugLog(msg: string) {
   console.log("[Via-DIAG]", msg);
   invoke("log_to_file", { msg: `[${BUILD_ID}] ${msg}` }).catch(() => {});
@@ -285,6 +285,31 @@ function closePanel() { $("panel").classList.remove("open"); $("panel-backdrop")
   uiLayerCount = Math.max(0, uiLayerCount - 1);
   if (uiLayerCount === 0) setShellUiVisible(true);
 }
+
+/* ── Native shell → frontend chrome bridge ──
+   Rust calls window.__chrome(...) directly (via webview eval) to open/close
+   the side menu and panels. This does NOT depend on the Tauri event system. */
+(window as any).__newWindow = (url: string) => {
+  debugLog(`[NEW-WINDOW] url=${url}`);
+  createTab(url).catch(e => debugLog(`[NEW-WINDOW] createTab FAIL: ${e}`));
+};
+
+(window as any).__chrome = (kind: string, mode: string) => {
+  debugLog(`[CHROME] kind=${kind} mode=${mode}`);
+  try {
+    if (kind === "menu") {
+      if (mode === "toggle") { if (menuOpen) closeMenu(); else openMenu(); }
+      else if (mode === "open") openMenu();
+      else closeMenu();
+    } else if (kind === "tabs") {
+      openPanel("Tabs (" + tabs.length + ")", renderTabs);
+    } else if (kind === "close") {
+      closeMenu(); closePanel();
+    }
+  } catch (e) {
+    debugLog(`[CHROME] ERROR: ${e}`);
+  }
+};
 
 /* ═══════ PANEL RENDERERS ═══════ */
 function renderBookmarks(b: HTMLElement) {
@@ -620,6 +645,25 @@ async function boot() {
   setupEvents();
   setupKeyboard();
   dlog("[STEP 3] OK");
+
+  // Step 3.5: Event channel self-test — proves whether Rust→JS events work.
+  const hasInternals = typeof (window as any).__TAURI_INTERNALS__ !== "undefined";
+  const hasEventPlugin = typeof (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ !== "undefined";
+  dlog(`[EVT-DIAG] __TAURI_INTERNALS__=${hasInternals} __TAURI_EVENT_PLUGIN_INTERNALS__=${hasEventPlugin}`);
+  try {
+    let received = false;
+    const unlisten = await listen("diag-event", (ev: any) => {
+      received = true;
+      dlog(`[EVT-TEST] RECEIVED payload=${JSON.stringify(ev.payload)}`);
+    });
+    (window as any).__evtCleanup = unlisten;
+    const sent = await invoke<string>("emit_diag_event", { payload: "hello-from-rust" });
+    dlog(`[EVT-TEST] emit_diag_event invoke=${sent}`);
+    setTimeout(() => dlog(`[EVT-TEST] t+1500ms received=${received}`), 1500);
+    setTimeout(() => dlog(`[EVT-TEST] t+4000ms received=${received}`), 4000);
+  } catch (e) {
+    dlog(`[EVT-TEST] listen/invoke FAIL: ${e}`);
+  }
 
   // Step 4: Wire up homepage search
   dlog("[STEP 4] Wiring homepage search...");

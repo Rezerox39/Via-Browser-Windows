@@ -10,7 +10,7 @@ use crate::init;
 use crate::settings::{self, Settings};
 
 // ═══════ DIAGNOSTICS ═══════
-pub const DIAG_BUILD: &str = "FUNCTIONAL_DIAGNOSTICS_2026_09_02_A";
+pub const DIAG_BUILD: &str = "FUNCTIONAL_DIAGNOSTICS_2026_09_05_A";
 
 // Cached initialization script — built once per settings change, reused per create_tab.
 use std::sync::OnceLock;
@@ -137,6 +137,10 @@ pub struct BrowserState {
     pub next_id: Mutex<u32>,
     pub active: Mutex<Option<u32>>,
     pub blocked: Mutex<u64>,
+    /// Cached logical window size (width, height) in physical-independent units.
+    /// Window-size APIs are unreliable off the main thread, so we keep a cache
+    /// updated on resize/setup and fall back to it when `inner_size()` fails.
+    pub win_logical_size: Mutex<Option<(f64, f64)>>,
 }
 
 pub struct SettingsState(pub Mutex<Settings>);
@@ -170,16 +174,46 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::Window, String> {
 
 pub fn tab_bounds(app: &tauri::AppHandle) -> Option<tauri::Rect> {
     let wvwin = app.get_webview_window("main")?;
-    let physical = wvwin.inner_size().ok()?;
-    if physical.width == 0 || physical.height == 0 { return None; }
-    let scale = wvwin.scale_factor().unwrap_or(1.0);
-    let width = physical.width as f64 / scale;
-    let height = physical.height as f64 / scale;
+    let state = app.state::<BrowserState>();
+    // Try the live size first; on failure (e.g. called off the main thread) use the cache.
+    let (width, height) = match wvwin.inner_size() {
+        Ok(physical) if physical.width > 0 && physical.height > 0 => {
+            let scale = wvwin.scale_factor().unwrap_or(1.0);
+            let w = physical.width as f64 / scale;
+            let h = physical.height as f64 / scale;
+            *state.win_logical_size.lock().unwrap() = Some((w, h));
+            (w, h)
+        }
+        _ => {
+            if let Some((w, h)) = *state.win_logical_size.lock().unwrap() {
+                diag_log("[TAB-BOUNDS] live size unavailable, using cached size");
+                (w, h)
+            } else {
+                return None;
+            }
+        }
+    };
+    if width <= 0.0 || height <= 0.0 { return None; }
     // Webview fills the full window — the native overlay floats above it
     Some(tauri::Rect {
         position: tauri::LogicalPosition::new(0.0, 0.0).into(),
         size: tauri::LogicalSize::new(width, height).into(),
     })
+}
+
+/// Refresh the cached window logical size. Call from the main thread:
+/// at setup and whenever the window is resized.
+pub fn refresh_window_size_cache(app: &tauri::AppHandle) {
+    let state = app.state::<BrowserState>();
+    if let Some(wvwin) = app.get_webview_window("main") {
+        if let Ok(physical) = wvwin.inner_size() {
+            let scale = wvwin.scale_factor().unwrap_or(1.0);
+            if physical.width > 0 && physical.height > 0 {
+                *state.win_logical_size.lock().unwrap() =
+                    Some((physical.width as f64 / scale, physical.height as f64 / scale));
+            }
+        }
+    }
 }
 
 pub fn relayout_tabs(app: &tauri::AppHandle) {
@@ -489,11 +523,17 @@ pub async fn create_tab(
         .on_new_window(move |url, _features| {
             let nav_url = url.to_string();
             diag_log(&format!("[NAVIGATION] NEW_WINDOW url={}", nav_url));
-            // Emit event to frontend to handle new tab creation.
-            // Do NOT acquire BrowserState locks here — this callback runs on the
-            // WebView2 thread and would deadlock if the Tokio thread holds the lock.
+            // Emit event to frontend AND drive it directly via eval so
+            // target=_blank works even if the event channel is unavailable.
             if let Some(win) = new_win_app.get_webview_window("main") {
                 let _ = win.emit("new-window-request", serde_json::json!({ "url": nav_url }));
+            }
+            if let Some(wv) = new_win_app.get_webview("main") {
+                let encoded = serde_json::to_string(&nav_url).unwrap_or_else(|_| "\"\"".into());
+                let _ = wv.eval(&format!(
+                    "window.__newWindow && window.__newWindow({});",
+                    encoded
+                ));
             }
             tauri::webview::NewWindowResponse::Deny
         });
@@ -849,13 +889,20 @@ pub fn on_nav_drag(
     dx: f64,
     dy: f64,
 ) -> Result<(), String> {
-    let state = app.state::<crate::shell::ShellState>();
-    let overlay = state.overlay.lock().unwrap();
-    if let Some(ref ov) = *overlay {
-        crate::shell::move_overlay(&app, ov.x + dx, ov.y + dy)
-    } else {
-        Err("overlay not found".into())
-    }
+    // NOTE: never hold the overlay lock while calling move_overlay — it locks
+    // the same mutex and would deadlock (this was the drag freeze bug).
+    let target = {
+        let shell_state = app.state::<crate::shell::ShellState>();
+        let overlay = shell_state.overlay.lock().unwrap();
+        overlay.as_ref().map(|ov| (ov.x + dx, ov.y + dy))
+    };
+    let Some((tx, ty)) = target else { return Err("overlay not found".into()) };
+    // Window/webview mutations must run on the main thread.
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = crate::shell::move_overlay(&app2, tx, ty);
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Handle address bar navigation from the overlay.
@@ -886,6 +933,19 @@ pub fn address_bar_navigate(
         }
         None => Err("no active tab".into()),
     }
+}
+
+/// Diagnostic event round-trip test: emits from Rust through BOTH the
+/// WebviewWindow channel and the AppHandle channel so the frontend log can
+/// show which (if either) actually delivers events.
+#[tauri::command]
+pub fn emit_diag_event(app: tauri::AppHandle, payload: String) -> Result<String, String> {
+    diag_log(&format!("[EVT-TEST] rust emit_diag_event payload={}", payload));
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("diag-event", payload.clone());
+    }
+    let _ = app.emit("diag-event", payload.clone());
+    Ok("emitted-over-both-channels".into())
 }
 
 /// Diagnostic: test if tab creation works and return detailed result
@@ -929,6 +989,7 @@ pub async fn diag_test_tab(
     
     // Test 4: create a test tab
     diag_log("[DIAG] Creating test tab...");
+    let prev_active = *state.active.lock().unwrap();
     let test_url = Some("https://www.google.com".to_string());
     match create_tab(app.clone(), state.clone(), sstate.clone(), test_url).await {
         Ok(info) => {
@@ -969,9 +1030,25 @@ pub async fn diag_test_tab(
                         }
                     }
                     
-                    // Clean up: close test tab
+                    // Clean up: close test tab and restore the previous active tab
+                    // so this diagnostic never corrupts browser state.
                     let _ = wv.close();
                     state.tabs.lock().unwrap().remove(&info.id);
+                    if let Some(pid) = prev_active {
+                        *state.active.lock().unwrap() = Some(pid);
+                        // Make sure the restored tab's webview is visible again.
+                        let plabel = state.tabs.lock().unwrap().get(&pid).cloned();
+                        if let Some(pl) = plabel {
+                            if let Some(pwv) = app.get_webview(&pl) {
+                                if let Some(bounds) = tab_bounds(&app) {
+                                    let _ = pwv.set_bounds(bounds);
+                                }
+                                let _ = pwv.show();
+                            }
+                        }
+                    } else {
+                        *state.active.lock().unwrap() = None;
+                    }
                     diag_log("[DIAG] test tab cleaned up");
                 }
                 None => {

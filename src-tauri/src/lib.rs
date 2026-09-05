@@ -35,12 +35,17 @@ pub fn run() {
 
             commands::diag_boot();
 
+            // Keep an authoritative cache of the window size so tab layout
+            // still works even when window APIs fail off the main thread.
+            commands::refresh_window_size_cache(&handle);
+
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.set_title(&format!("Via Browser · {}", commands::DIAG_BUILD));
                 let handle = handle.clone();
                 win.on_window_event(move |event| {
                     match event {
                         WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                            commands::refresh_window_size_cache(&handle);
                             commands::relayout_tabs(&handle);
                             shell::clamp_overlay_position(&handle);
                         }
@@ -82,6 +87,7 @@ pub fn run() {
             commands::set_tabs_visible,
             commands::update_overlay_tab_count_cmd,
             commands::emit_to_main,
+            commands::emit_diag_event,
             commands::diag_test_tab,
             // settings & browser
             commands::get_settings,

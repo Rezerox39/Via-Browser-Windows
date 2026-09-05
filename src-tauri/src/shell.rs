@@ -1,5 +1,5 @@
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, WebviewBuilder, WebviewUrl};
+use tauri::{Emitter, Manager, Url, WebviewBuilder, WebviewUrl};
 
 use crate::commands::{diag_log, BrowserState};
 
@@ -80,6 +80,8 @@ pub fn nav_back(app: &tauri::AppHandle) -> Result<(), String> {
     match active {
         Some(id) => {
             diag_log(&format!("[NAV] back tab={}", id));
+            // Close any open frontend chrome so the user returns to the page.
+            eval_main(app, "window.__chrome && window.__chrome('close');");
             let label = browser.tabs.lock().unwrap().get(&id).cloned();
             if let Some(label) = label {
                 if let Some(wv) = app.get_webview(&label) {
@@ -98,6 +100,8 @@ pub fn nav_forward(app: &tauri::AppHandle) -> Result<(), String> {
     match active {
         Some(id) => {
             diag_log(&format!("[NAV] forward tab={}", id));
+            // Close any open frontend chrome so the user returns to the page.
+            eval_main(app, "window.__chrome && window.__chrome('close');");
             let label = browser.tabs.lock().unwrap().get(&id).cloned();
             if let Some(label) = label {
                 if let Some(wv) = app.get_webview(&label) {
@@ -116,15 +120,24 @@ pub fn nav_home(app: &tauri::AppHandle) -> Result<(), String> {
     match active {
         Some(id) => {
             diag_log(&format!("[NAV] home tab={}", id));
+            // Close any open frontend chrome, then surface the tab and go home.
+            eval_main(app, "window.__chrome && window.__chrome('close');");
             let label = browser.tabs.lock().unwrap().get(&id).cloned();
             if let Some(label) = label {
                 if let Some(wv) = app.get_webview(&label) {
-                    // Ensure the active tab is visible first, then navigate home.
+                    // Ensure the active tab is visible first, then navigate home
+                    // using the native navigation API (not JS eval).
                     if let Some(bounds) = crate::commands::tab_bounds(app) {
                         let _ = wv.set_bounds(bounds);
                     }
                     let _ = wv.show();
-                    let _ = wv.eval("window.location.replace('tauri://localhost/newtab.html')");
+                    let newtab = Url::parse("tauri://localhost/newtab.html")
+                        .or_else(|_| Url::parse("http://tauri.localhost/newtab.html"))
+                        .map_err(|e| e.to_string())?;
+                    match wv.navigate(newtab) {
+                        Ok(()) => diag_log("[NAV] home navigate=OK"),
+                        Err(e) => diag_log(&format!("[NAV] home navigate=ERROR: {}", e)),
+                    }
                 }
             }
             crate::shell::ensure_overlay_above(app);
@@ -134,25 +147,51 @@ pub fn nav_home(app: &tauri::AppHandle) -> Result<(), String> {
     }
 }
 
-pub fn nav_tabs(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[NAV] tabs");
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.emit("nav-action", "tabs");
+/// Hide every tab WebView natively so the main webview DOM (menu, panels)
+/// becomes visible. The navigation overlay is managed separately and stays up.
+pub fn hide_all_tabs(app: &tauri::AppHandle) {
+    let browser = app.state::<BrowserState>();
+    let labels: Vec<String> = browser.tabs.lock().unwrap().values().cloned().collect();
+    for label in labels {
+        if let Some(wv) = app.get_webview(&label) {
+            let _ = wv.hide();
+        }
     }
-    Ok(())
 }
 
+/// Evaluate JavaScript directly in the main webview. This is a guaranteed
+/// channel that does not depend on the Tauri event plugin.
+pub fn eval_main(app: &tauri::AppHandle, js: &str) {
+    if let Some(wv) = app.get_webview("main") {
+        let _ = wv.eval(js);
+    } else if let Some(win) = app.get_webview_window("main") {
+        let _ = win.eval(js);
+    }
+}
+
+/// Open/close the frontend side-menu from the native shell.
+/// Strategy: hide tab webviews natively, then drive the main webview's DOM
+/// directly via eval. The event emit is kept as a secondary best-effort path.
 pub fn nav_menu(app: &tauri::AppHandle) -> Result<(), String> {
-    diag_log("[NAV] menu -> frontend side-menu");
-    // The full Via menu (side-menu with all items) lives in the main webview.
-    // Emit nav-action "menu" and the frontend toggles it, hiding tab webviews
-    // so the main webview (and its menu DOM) becomes visible.
+    diag_log("[NAV] menu -> native chrome bridge");
+    hide_all_tabs(app);
+    eval_main(app, "window.__chrome && window.__chrome('menu','toggle');");
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.emit("nav-action", "menu");
     }
     Ok(())
 }
 
+/// Open the tabs panel from the native shell (same strategy as nav_menu).
+pub fn nav_tabs(app: &tauri::AppHandle) -> Result<(), String> {
+    diag_log("[NAV] tabs -> native chrome bridge");
+    hide_all_tabs(app);
+    eval_main(app, "window.__chrome && window.__chrome('tabs','open');");
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.emit("nav-action", "tabs");
+    }
+    Ok(())
+}
 
 // ─── Navigation overlay (the pill bar) ───
 
@@ -278,32 +317,38 @@ pub fn create_nav_overlay(app: &tauri::AppHandle) -> Result<(), String> {
 
 pub fn move_overlay(app: &tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
     let state = app.state::<ShellState>();
-    let mut overlay = state.overlay.lock().unwrap();
-    if let Some(ref mut ov) = *overlay {
+
+    // Clamp + update state under the lock, then release it before calling any
+    // window/webview API (set_bounds). Holding the lock across those calls was
+    // part of the drag freeze: `set_bounds` may dispatch to the main thread,
+    // and a concurrent caller waiting on the same lock would deadlock.
+    let (label, width, height, nx, ny) = {
+        let mut overlay = state.overlay.lock().unwrap();
+        let Some(ov) = overlay.as_mut() else { return Err("overlay not ready".into()) };
+
         let window = app.get_window("main").ok_or("main window not found")?;
         let win_size = window.inner_size().map_err(|e| e.to_string())?;
         let scale = window.scale_factor().unwrap_or(1.0);
         let win_w = win_size.width as f64 / scale;
         let win_h = win_size.height as f64 / scale;
 
-        let x = x.clamp(0.0, (win_w - ov.width).max(0.0));
-        let y = y.clamp(0.0, (win_h - ov.height).max(0.0));
+        let nx = x.clamp(0.0, (win_w - ov.width).max(0.0));
+        let ny = y.clamp(0.0, (win_h - ov.height).max(0.0));
 
-        ov.x = x;
-        ov.y = y;
+        ov.x = nx;
+        ov.y = ny;
 
-        if let Some(wv) = app.get_webview(&ov.label) {
-            let _ = wv.set_bounds(tauri::Rect {
-                position: tauri::LogicalPosition::new(x, y).into(),
-                size: tauri::LogicalSize::new(ov.width, ov.height).into(),
-            });
-        }
-        diag_log(&format!("[NAV-DRAG] moved x={} y={}", x, y));
+        (ov.label.clone(), ov.width, ov.height, nx, ny)
+    };
 
-        let (nx, ny) = (ov.x, ov.y);
-        drop(overlay);
-        save_overlay_position(app, nx, ny);
+    if let Some(wv) = app.get_webview(&label) {
+        let _ = wv.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(nx, ny).into(),
+            size: tauri::LogicalSize::new(width, height).into(),
+        });
     }
+    diag_log(&format!("[NAV-DRAG] moved x={} y={}", nx, ny));
+    save_overlay_position(app, nx, ny);
     Ok(())
 }
 
